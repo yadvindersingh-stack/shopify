@@ -1,8 +1,7 @@
 "use client";
 import React, { ReactNode, useMemo } from "react";
 import { AppProvider, Frame, Page } from "@shopify/polaris";
-import { Provider as AppBridgeProvider } from "@shopify/app-bridge-react";
-
+import createApp from "@shopify/app-bridge";
 export default function PolarisProvider({ children }: { children: ReactNode }) {
   const host = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -11,13 +10,18 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
 
   const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || process.env.SHOPIFY_API_KEY || "";
 
+  if (!apiKey || !host) return null;
+
+  // Initialize App Bridge once for the embedded app environment
+  useMemo(() => {
+    createApp({ apiKey, host, forceRedirect: true });
+  }, [apiKey, host]);
+
   return (
-    <AppBridgeProvider config={{ apiKey, host, forceRedirect: true }}>
-      <AppProvider i18n={{}}>
-        <Frame>
-          <Page>{children}</Page>
-        </Frame>
-      </AppProvider>
-    </AppBridgeProvider>
+    <AppProvider i18n={{}}>
+      <Frame>
+        <Page>{children}</Page>
+      </Frame>
+    </AppProvider>
   );
 }
