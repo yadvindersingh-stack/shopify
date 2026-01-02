@@ -1,3 +1,4 @@
+import '@shopify/shopify-api/adapters/node';
 import { SignJWT, jwtVerify } from 'jose';
 import { shopifyApi, ApiVersion } from '@shopify/shopify-api';
 import { supabase } from './supabase';
@@ -6,6 +7,14 @@ const SESSION_COOKIE = 'shop_session';
 const SESSION_TTL = '30d';
 const DEFAULT_API_VERSION = (process.env.SHOPIFY_API_VERSION as ApiVersion | undefined) ?? ApiVersion.July24;
 
+const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
+const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
+const SHOPIFY_APP_URL = process.env.SHOPIFY_APP_URL;
+
+if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET || !SHOPIFY_APP_URL) {
+  throw new Error('Missing required Shopify env: SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_APP_URL');
+}
+
 function getSessionSecret() {
   const secret = process.env.SESSION_SECRET;
   if (!secret) throw new Error('SESSION_SECRET is required');
@@ -13,10 +22,10 @@ function getSessionSecret() {
 }
 
 export const shopify = shopifyApi({
-  apiKey: process.env.SHOPIFY_API_KEY!,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET!,
+  apiKey: SHOPIFY_API_KEY,
+  apiSecretKey: SHOPIFY_API_SECRET,
   scopes: (process.env.SHOPIFY_SCOPES || '').split(',').map(s => s.trim()).filter(Boolean),
-  hostName: new URL(process.env.SHOPIFY_APP_URL!).host,
+  hostName: new URL(SHOPIFY_APP_URL).host,
   apiVersion: DEFAULT_API_VERSION,
   isEmbeddedApp: true,
 });
@@ -46,7 +55,7 @@ export async function decodeShopFromBearer(authHeader?: string): Promise<string 
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.replace('Bearer ', '');
   try {
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(process.env.SHOPIFY_API_SECRET!));
+    const { payload } = await jwtVerify(token, new TextEncoder().encode(SHOPIFY_API_SECRET));
     const dest = typeof payload.dest === 'string' ? payload.dest : undefined;
     const iss = typeof payload.iss === 'string' ? payload.iss : undefined;
     const url = dest || iss;
@@ -91,8 +100,8 @@ export async function exchangeCodeForToken(shop: string, code: string) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      client_id: process.env.SHOPIFY_API_KEY,
-      client_secret: process.env.SHOPIFY_API_SECRET,
+      client_id: SHOPIFY_API_KEY,
+      client_secret: SHOPIFY_API_SECRET,
       code,
     }),
   });
