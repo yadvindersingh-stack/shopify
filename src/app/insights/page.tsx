@@ -14,6 +14,7 @@ import {
   Banner,
 } from "@shopify/polaris";
 import InsightCard from "@/components/InsightCard";
+import { buildPathWithHost } from "@/lib/host";
 
 type Insight = {
   id: string;
@@ -34,7 +35,7 @@ export default function InsightsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
-  const withHost = useCallback((path: string) => (hostParam ? `${path}?host=${encodeURIComponent(hostParam)}` : path), [hostParam]);
+  const withHost = useCallback((path: string) => buildPathWithHost(path, hostParam), [hostParam]);
 
   const lastScan = useMemo(() => {
     if (!insights.length) return "No scans yet";

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { buildPathWithHost } from "@/lib/host";
 
 export default function Home() {
   const router = useRouter();
@@ -8,7 +9,7 @@ export default function Home() {
 
   useEffect(() => {
     const host = searchParams.get("host");
-    const target = host ? `/app/setup?host=${encodeURIComponent(host)}` : "/app/setup";
+    const target = buildPathWithHost("/app/setup", host || undefined);
     router.replace(target);
   }, [router, searchParams]);
 

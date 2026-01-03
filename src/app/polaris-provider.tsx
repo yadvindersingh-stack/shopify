@@ -1,16 +1,35 @@
 "use client";
-import React, { ReactNode, useMemo } from "react";
+import React, { ReactNode, useEffect, useMemo, useState } from "react";
 import { AppProvider, Banner, Frame, Navigation, Page } from "@shopify/polaris";
 import createApp from "@shopify/app-bridge";
 import { usePathname, useSearchParams } from "next/navigation";
+import { buildPathWithHost } from "@/lib/host";
 
 export default function PolarisProvider({ children }: { children: ReactNode }) {
-  const host = useMemo(() => {
-    if (typeof window === "undefined") return "";
-    return new URLSearchParams(window.location.search).get("host") || "";
-  }, []);
+  const searchParams = useSearchParams();
+  const hostFromQuery = useMemo(() => searchParams.get("host") || "", [searchParams]);
+  const [persistedHost, setPersistedHost] = useState<string>(() => {
+    if (typeof window === "undefined") return hostFromQuery || "";
+    return hostFromQuery || window.localStorage.getItem("shopifyHost") || "";
+  });
 
-  const hostQuery = host ? `?host=${encodeURIComponent(host)}` : "";
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (hostFromQuery) {
+      window.localStorage.setItem("shopifyHost", hostFromQuery);
+      setPersistedHost(hostFromQuery);
+      return;
+    }
+    const stored = window.localStorage.getItem("shopifyHost") || "";
+    if (stored && !hostFromQuery) {
+      setPersistedHost(stored);
+      const url = new URL(window.location.href);
+      url.searchParams.set("host", stored);
+      window.location.replace(url.toString());
+    }
+  }, [hostFromQuery]);
+
+  const host = hostFromQuery || persistedHost;
   const pathname = usePathname();
 
   const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
@@ -43,12 +62,12 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
 
   const navigationItems = [
     {
-      url: `/app/insights${hostQuery}`,
+      url: buildPathWithHost("/app/insights", host),
       label: "Insights",
       selected: pathname?.startsWith("/app/insights") ?? false,
     },
     {
-      url: `/app/settings${hostQuery}`,
+      url: buildPathWithHost("/app/settings", host),
       label: "Settings",
       selected: pathname?.startsWith("/app/settings") ?? false,
     },

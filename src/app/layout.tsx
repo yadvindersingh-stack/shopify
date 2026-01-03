@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import "@shopify/polaris/build/esm/styles.css";
 import PolarisProvider from "./polaris-provider";
+import { Suspense } from "react";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -29,7 +30,9 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <PolarisProvider>{children}</PolarisProvider>
+        <Suspense fallback={null}>
+          <PolarisProvider>{children}</PolarisProvider>
+        </Suspense>
       </body>
     </html>
   );

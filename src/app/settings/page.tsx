@@ -13,6 +13,7 @@ import {
   TextField,
   Toast,
 } from "@shopify/polaris";
+import { buildPathWithHost } from "@/lib/host";
 import { useSearchParams } from "next/navigation";
 
 const timezones = [
@@ -28,9 +29,9 @@ export default function SettingsPage() {
   const [weekly, setWeekly] = useState(true);
   const [timezone, setTimezone] = useState("store");
   const [loading, setLoading] = useState(false);
-  const [toast, setToast] = useState<{ content: string; tone?: "magic" } | null>(null);
-    const searchParams = useSearchParams();
-    const hostParam = searchParams.get("host") || "";
+  const [toast, setToast] = useState<{ content: string } | null>(null);
+  const searchParams = useSearchParams();
+  const hostParam = searchParams.get("host") || "";
 
   useEffect(() => {
     (async () => {
@@ -59,7 +60,7 @@ export default function SettingsPage() {
       setToast({ content: "Settings saved" });
     } catch (err) {
       console.error(err);
-      setToast({ content: "Unable to save settings", tone: "magic" });
+      setToast({ content: "Unable to save settings" });
     } finally {
       setLoading(false);
     }
@@ -73,7 +74,7 @@ export default function SettingsPage() {
       setToast({ content: "Test email sent" });
     } catch (err) {
       console.error(err);
-      setToast({ content: "Unable to send test email", tone: "magic" });
+      setToast({ content: "Unable to send test email" });
     } finally {
       setLoading(false);
     }
@@ -112,7 +113,7 @@ export default function SettingsPage() {
             </Card>
           </Layout.Section>
       </Layout>
-      {toast && <Toast content={toast.content} tone={toast.tone} onDismiss={() => setToast(null)} />}
+      {toast && <Toast content={toast.content} onDismiss={() => setToast(null)} />}
     </Page>
   );
 }

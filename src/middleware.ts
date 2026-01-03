@@ -25,15 +25,17 @@ export async function middleware(req: NextRequest) {
 
   if (!shop) {
     const shopParam = req.nextUrl.searchParams.get('shop');
+    const hostParam = req.nextUrl.searchParams.get('host');
     if (shopParam) {
       const url = req.nextUrl.clone();
       url.pathname = '/api/auth/start';
+      if (hostParam) url.searchParams.set('host', hostParam);
       url.searchParams.set('shop', shopParam);
       return NextResponse.redirect(url);
     }
     const errUrl = req.nextUrl.clone();
     errUrl.pathname = '/app/error';
-    errUrl.search = '';
+    // keep existing search (including host) so context isn't lost
     return NextResponse.redirect(errUrl);
   }
 

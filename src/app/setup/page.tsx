@@ -12,6 +12,7 @@ import {
   Text,
   TextField,
 } from "@shopify/polaris";
+import { buildPathWithHost } from "@/lib/host";
 
 export default function SetupPage() {
   const [email, setEmail] = useState("");
@@ -22,7 +23,7 @@ export default function SetupPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
-  const withHost = (path: string) => (hostParam ? `${path}${path.includes("?") ? "&" : "?"}host=${encodeURIComponent(hostParam)}` : path);
+  const withHost = (path: string) => buildPathWithHost(path, hostParam);
 
   useEffect(() => {
     (async () => {
