@@ -1,12 +1,16 @@
 "use client";
 import React, { ReactNode, useMemo } from "react";
-import { AppProvider, Banner, Frame, Page } from "@shopify/polaris";
+import { AppProvider, Banner, Frame, Navigation, Page } from "@shopify/polaris";
 import createApp from "@shopify/app-bridge";
+import { usePathname } from "next/navigation";
+
 export default function PolarisProvider({ children }: { children: ReactNode }) {
   const host = useMemo(() => {
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.search).get("host") || "";
   }, []);
+
+  const pathname = usePathname();
 
   const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
 
@@ -36,10 +40,29 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  const navigationItems = [
+    {
+      url: "/app/insights",
+      label: "Insights",
+      selected: pathname?.startsWith("/app/insights") ?? false,
+    },
+    {
+      url: "/app/settings",
+      label: "Settings",
+      selected: pathname?.startsWith("/app/settings") ?? false,
+    },
+  ];
+
   return (
     <AppProvider i18n={{}}>
-      <Frame>
-        <Page>{children}</Page>
+      <Frame
+        navigation={
+          <Navigation location={pathname || "/app/insights"}>
+            <Navigation.Section items={navigationItems} />
+          </Navigation>
+        }
+      >
+        {children}
       </Frame>
     </AppProvider>
   );

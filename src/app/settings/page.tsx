@@ -1,97 +1,115 @@
 "use client";
-import { useState, type FormEvent } from "react";
-import { Card, Text, BlockStack, InlineStack, Button, TextField } from "@shopify/polaris";
+import { useEffect, useState } from "react";
+import {
+  BlockStack,
+  Button,
+  Card,
+  Checkbox,
+  InlineStack,
+  Layout,
+  Page,
+  Select,
+  Text,
+  TextField,
+  Toast,
+} from "@shopify/polaris";
+
+const timezones = [
+  { label: "Store timezone (default)", value: "store" },
+  { label: "UTC", value: "UTC" },
+  { label: "Eastern Time (ET)", value: "America/New_York" },
+  { label: "Pacific Time (PT)", value: "America/Los_Angeles" },
+];
 
 export default function SettingsPage() {
   const [email, setEmail] = useState("");
   const [daily, setDaily] = useState(true);
   const [weekly, setWeekly] = useState(true);
+  const [timezone, setTimezone] = useState("store");
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("");
+  const [toast, setToast] = useState<{ content: string; tone?: "magic" } | null>(null);
 
-    async function handleSave(event: FormEvent<HTMLFormElement>): Promise<void> {
-        event.preventDefault();
-        setLoading(true);
-        setMessage("");
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/setup", { method: "GET" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data?.email) setEmail(data.email);
+        if (typeof data?.daily_enabled === "boolean") setDaily(data.daily_enabled);
+        if (typeof data?.weekly_enabled === "boolean") setWeekly(data.weekly_enabled);
+      } catch (err) {
+        console.error(err);
+      }
+    })();
+  }, []);
 
-        try {
-            const response = await fetch("/api/settings", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email, daily, weekly }),
-            });
-
-            if (!response.ok) throw new Error("Failed to save settings");
-            setMessage("Settings saved successfully.");
-        } catch (error) {
-            console.error(error);
-            setMessage("Unable to save settings. Please try again.");
-        } finally {
-            setLoading(false);
-        }
+  const handleSave = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, daily_enabled: daily, weekly_enabled: weekly }),
+      });
+      if (!res.ok) throw new Error("Failed to save settings");
+      setToast({ content: "Settings saved" });
+    } catch (err) {
+      console.error(err);
+      setToast({ content: "Unable to save settings", tone: "magic" });
+    } finally {
+      setLoading(false);
     }
+  };
 
-    async function handleTestEmail(): Promise<void> {
-        setLoading(true);
-        setMessage("");
-
-        try {
-            const response = await fetch("/api/settings/test-email", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email }),
-            });
-
-            if (!response.ok) throw new Error("Failed to send test email");
-            setMessage("Test email sent successfully.");
-        } catch (error) {
-            console.error(error);
-            setMessage("Unable to send test email. Please try again.");
-        } finally {
-            setLoading(false);
-        }
+  const handleTestEmail = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/email/test", { method: "POST" });
+      if (!res.ok) throw new Error("Failed to send test email");
+      setToast({ content: "Test email sent" });
+    } catch (err) {
+      console.error(err);
+      setToast({ content: "Unable to send test email", tone: "magic" });
+    } finally {
+      setLoading(false);
     }
+  };
 
   return (
-    <Card>
-      <BlockStack gap="400">
-        <Text variant="headingLg" as="h1">Settings</Text>
-        <form onSubmit={handleSave}>
-          <BlockStack gap="300">
-            <TextField
-              label="Email"
-              type="email"
-              value={email}
-              onChange={setEmail}
-              requiredIndicator
-              autoComplete="email"
-            />
-            <InlineStack gap="400" wrap={false} align="start">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={daily} onChange={e => setDaily(e.target.checked)} />
-                <span>Daily emails</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={weekly} onChange={e => setWeekly(e.target.checked)} />
-                <span>Weekly summary</span>
-              </label>
-            </InlineStack>
-            <InlineStack gap="200">
-              <Button variant="primary" submit loading={loading}>
-                {loading ? "Saving..." : "Save settings"}
-              </Button>
-              <Button onClick={handleTestEmail} loading={loading}>
-                Send test email
-              </Button>
-            </InlineStack>
-            {message && (
-              <Text as="p" tone="success">
-                {message}
-              </Text>
-            )}
-          </BlockStack>
-        </form>
-      </BlockStack>
-    </Card>
+    <Page title="Settings">
+      <Layout>
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="300">
+                <TextField
+                  label="Email"
+                  type="email"
+                  value={email}
+                  onChange={setEmail}
+                  requiredIndicator
+                  autoComplete="email"
+                  helpText="We will send daily and weekly insights here."
+                />
+                <BlockStack gap="200">
+                  <Checkbox label="Daily insights" checked={daily} onChange={(value) => setDaily(Boolean(value))} />
+                  <Checkbox label="Weekly summary" checked={weekly} onChange={(value) => setWeekly(Boolean(value))} />
+                </BlockStack>
+                <Select label="Timezone" options={timezones} value={timezone} onChange={setTimezone} />
+
+                <InlineStack gap="200">
+                  <Button variant="primary" onClick={handleSave} loading={loading} disabled={!email.trim()}>
+                    Save settings
+                  </Button>
+                  <Button onClick={handleTestEmail} loading={loading}>
+                    Send test email
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
+      </Layout>
+      {toast && <Toast content={toast.content} tone={toast.tone} onDismiss={() => setToast(null)} />}
+    </Page>
   );
 }

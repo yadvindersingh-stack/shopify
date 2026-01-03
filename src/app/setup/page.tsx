@@ -1,58 +1,112 @@
 "use client";
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Card, Text, BlockStack, InlineStack, Button, TextField } from "@shopify/polaris";
+import {
+  BlockStack,
+  Button,
+  Card,
+  Checkbox,
+  InlineStack,
+  Layout,
+  Page,
+  Text,
+  TextField,
+} from "@shopify/polaris";
 
 export default function SetupPage() {
   const [email, setEmail] = useState("");
   const [daily, setDaily] = useState(true);
   const [weekly, setWeekly] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [prefillLoading, setPrefillLoading] = useState(true);
   const router = useRouter();
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/setup", { method: "GET" });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.email) setEmail(data.email);
+          if (typeof data?.daily_enabled === "boolean") setDaily(data.daily_enabled);
+          if (typeof data?.weekly_enabled === "boolean") setWeekly(data.weekly_enabled);
+        }
+      } finally {
+        setPrefillLoading(false);
+      }
+    })();
+  }, []);
+
+  const primaryDisabled = useMemo(() => !email.trim() || loading || prefillLoading, [email, loading, prefillLoading]);
+
+  async function handleRunScan() {
     setLoading(true);
-    await fetch("/api/setup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, daily_enabled: daily, weekly_enabled: weekly }),
-    });
-    // Run first scan
-    await fetch("/api/insights/run", { method: "POST" });
-    router.push("/insights");
+    try {
+      await fetch("/api/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, daily_enabled: daily, weekly_enabled: weekly }),
+      });
+      const runRes = await fetch("/api/insights/run", { method: "POST" });
+      const json = runRes.ok ? await runRes.json() : { insights: [] };
+      const count = Array.isArray(json?.insights) ? json.insights.length : 0;
+      router.push(`/app/insights?scan=complete&count=${count}`);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
-    <Card>
-      <BlockStack gap="400">
-        <Text variant="headingLg" as="h1">Setup</Text>
-        <form onSubmit={handleSubmit}>
-          <BlockStack gap="300">
-            <TextField
-              label="Email"
-              type="email"
-              value={email}
-              onChange={setEmail}
-              requiredIndicator
-              autoComplete="email"
-            />
-            <InlineStack gap="400" wrap={false} align="start">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={daily} onChange={e => setDaily(e.target.checked)} />
-                <span>Daily emails</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={weekly} onChange={e => setWeekly(e.target.checked)} />
-                <span>Weekly summary</span>
-              </label>
-            </InlineStack>
-            <Button variant="primary" submit loading={loading}>
-              {loading ? "Running scan..." : "Run my first insight scan"}
-            </Button>
-          </BlockStack>
-        </form>
-      </BlockStack>
-    </Card>
+    <Page title="Your daily store action list" subtitle="We scan your store and email the most important things to fix. No changes are made automatically.">
+      <Layout>
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="400">
+              <Text as="h2" variant="headingSm">
+                Email & cadence
+              </Text>
+              <TextField
+                label="Send insights to"
+                type="email"
+                value={email}
+                onChange={setEmail}
+                requiredIndicator
+                autoComplete="email"
+                helpText="We'll use this email for all digests."
+              />
+              <BlockStack gap="200">
+                <Checkbox
+                  label="Daily insights"
+                  checked={daily}
+                  onChange={(value) => setDaily(Boolean(value))}
+                  helpText="Daily emails are short — usually 3 items."
+                />
+                <Checkbox
+                  label="Weekly summary"
+                  checked={weekly}
+                  onChange={(value) => setWeekly(Boolean(value))}
+                />
+              </BlockStack>
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="200">
+              <Text as="h2" variant="headingSm">
+                First scan
+              </Text>
+              <InlineStack gap="200">
+                <Button variant="primary" loading={loading} disabled={primaryDisabled} onClick={handleRunScan}>
+                  {loading ? "Running scan..." : "Run my first scan"}
+                </Button>
+                <Button variant="plain" onClick={() => router.push("/app/insights")}>Skip for now</Button>
+              </InlineStack>
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+      </Layout>
+    </Page>
   );
 }

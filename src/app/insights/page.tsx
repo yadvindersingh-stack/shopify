@@ -1,7 +1,19 @@
 "use client";
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import { Card, Text, Button, BlockStack, InlineStack, Badge, Box } from "@shopify/polaris";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  BlockStack,
+  Button,
+  Card,
+  EmptyState,
+  InlineStack,
+  Layout,
+  Page,
+  Spinner,
+  Text,
+  Banner,
+} from "@shopify/polaris";
+import InsightCard from "@/components/InsightCard";
 
 type Insight = {
   id: string;
@@ -10,68 +22,135 @@ type Insight = {
   description: string;
   severity: "high" | "medium" | "low";
   suggested_action: string;
-  data_snapshot: any;
+  data_snapshot: Record<string, any>;
+  created_at?: string;
 };
 
 export default function InsightsPage() {
   const [insights, setInsights] = useState<Insight[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [scanLoading, setScanLoading] = useState<boolean>(false);
+  const [banner, setBanner] = useState<{ message: string } | null>(null);
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
-  // Dummy runScan handler
-  const runScan = async () => {
-    setScanLoading(true);
-    // Simulate scan
-    setTimeout(() => setScanLoading(false), 1000);
-  };
+  const lastScan = useMemo(() => {
+    if (!insights.length) return "No scans yet";
+    const created = insights[0].created_at ? new Date(insights[0].created_at) : null;
+    if (!created) return "No scans yet";
+    const now = Date.now();
+    const diffMs = now - created.getTime();
+    const diffMinutes = Math.floor(diffMs / 60000);
+    if (diffMinutes < 1) return "Just now";
+    if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes === 1 ? "" : "s"} ago`;
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? "" : "s"} ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
+  }, [insights]);
+
+  const fetchInsights = useCallback(async () => {
+    setLoading(true);
+    try {
+      const settingsRes = await fetch("/api/setup", { cache: "no-store" });
+      if (settingsRes.ok) {
+        const settings = await settingsRes.json();
+        if (!settings?.email) {
+          setLoading(false);
+          router.replace("/app/setup");
+          return;
+        }
+      }
+      const res = await fetch("/api/insights", { cache: "no-store" });
+      if (res.status === 401) {
+        router.replace("/app/setup");
+        return;
+      }
+      const data = await res.json();
+      const sliced = Array.isArray(data) ? data.slice(0, 5) : [];
+      setInsights(sliced);
+    } finally {
+      setLoading(false);
+    }
+  }, [router]);
 
   useEffect(() => {
-    // Simulate fetching insights
-    setTimeout(() => {
-      setInsights([]);
-      setLoading(false);
-    }, 1000);
-  }, []);
+    fetchInsights();
+  }, [fetchInsights]);
+
+  useEffect(() => {
+    const scan = searchParams.get("scan");
+    const count = searchParams.get("count");
+    if (scan === "complete") {
+      setBanner({ message: `Scan complete — ${count ?? "0"} insights found.` });
+      router.replace("/app/insights");
+    }
+  }, [router, searchParams]);
+
+  const runScan = async () => {
+    setScanLoading(true);
+    try {
+      const res = await fetch("/api/insights/run", { method: "POST" });
+      if (res.status === 401) {
+        router.replace("/app/setup");
+        return;
+      }
+      const json = await res.json();
+      const count = Array.isArray(json?.insights) ? json.insights.length : 0;
+      setBanner({ message: `Scan complete — ${count} insights found.` });
+      await fetchInsights();
+    } finally {
+      setScanLoading(false);
+    }
+  };
+
+  const shouldShowEmpty = useMemo(() => {
+    if (!insights.length) return true;
+    return !insights.some((i) => i.severity === "high" || i.severity === "medium");
+  }, [insights]);
 
   return (
-    <Card>
-      <BlockStack gap="400">
-        <InlineStack align="space-between" blockAlign="center">
-          <Text variant="headingLg" as="h1">Insights</Text>
-          <Button variant="primary" onClick={runScan} loading={scanLoading}>Run scan now</Button>
-        </InlineStack>
-        {loading ? (
-          <Text as="p">Loading...</Text>
-        ) : insights.length === 0 ? (
-          <Text as="p" tone="subdued">No insights to display.</Text>
-        ) : (
+    <Page
+      title="Today’s insights"
+      subtitle={`Last scan: ${lastScan}`}
+      primaryAction={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
+      secondaryActions={[{ content: "Settings", onAction: () => router.push("/app/settings") }]}
+    >
+      <Layout>
+        <Layout.Section>
           <BlockStack gap="300">
-            {insights.map((insight) => (
-              <Card key={insight.id}>
-                <BlockStack gap="200">
-                  <InlineStack align="space-between">
-                    <Badge tone={insight.severity === 'high' ? 'critical' : insight.severity === 'medium' ? 'warning' : 'success'}>
-                      {insight.severity}
-                    </Badge>
-                    <Text as="h3" variant="headingMd">{insight.title}</Text>
-                  </InlineStack>
-                  <details>
-                    <summary className="cursor-pointer text-sm">Details</summary>
-                    <Box padding="200">
-                      <BlockStack gap="200">
-                        <Text as="p">{insight.description}</Text>
-                        <Text tone="subdued" as="p">Suggested: {insight.suggested_action}</Text>
-                        <pre className="text-xs bg-gray-100 rounded p-2 overflow-x-auto">{JSON.stringify(insight.data_snapshot, null, 2)}</pre>
-                      </BlockStack>
-                    </Box>
-                  </details>
-                </BlockStack>
+            {banner && (
+              <Banner tone="success" title={banner.message} onDismiss={() => setBanner(null)} />
+            )}
+
+            {loading ? (
+              <InlineStack align="center">
+                <Spinner accessibilityLabel="Loading insights" size="small" />
+                <Text as="span" variant="bodyMd" tone="subdued">Loading insights…</Text>
+              </InlineStack>
+            ) : shouldShowEmpty ? (
+              <Card>
+                <EmptyState
+                  heading="Nothing critical today"
+                  image="https://cdn.shopify.com/static/images/admin/emptystate.svg"
+                  action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
+                  secondaryAction={{ content: "Settings", onAction: () => router.push("/app/settings") }}
+                >
+                  <Text as="p" tone="subdued">
+                    Your store looks stable based on the last scan. We’ll email you when something changes.
+                  </Text>
+                </EmptyState>
               </Card>
-            ))}
+            ) : (
+              <BlockStack gap="300">
+                {insights.map((insight) => (
+                  <InsightCard key={insight.id} insight={insight} />
+                ))}
+              </BlockStack>
+            )}
           </BlockStack>
-        )}
-        <Link href="/settings">Settings</Link>
-      </BlockStack>
-    </Card>
+        </Layout.Section>
+      </Layout>
+    </Page>
   );
 }
