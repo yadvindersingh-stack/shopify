@@ -35,7 +35,7 @@ export async function signSessionCookie(shop: string) {
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime(SESSION_TTL)
     .sign(getSessionSecret());
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}; Secure`;
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=None; Max-Age=${60 * 60 * 24 * 30}; Secure`;
 }
 
 export async function readSessionFromCookie(cookieHeader?: string): Promise<string | null> {
