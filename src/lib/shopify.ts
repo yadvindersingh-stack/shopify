@@ -7,12 +7,12 @@ const SESSION_COOKIE = 'shop_session';
 const SESSION_TTL = '30d';
 const DEFAULT_API_VERSION = (process.env.SHOPIFY_API_VERSION as ApiVersion | undefined) ?? ApiVersion.July24;
 
-const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
+const SHOPIFY_API_KEY = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY;
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
 const SHOPIFY_APP_URL = process.env.SHOPIFY_APP_URL;
 
 if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET || !SHOPIFY_APP_URL) {
-  throw new Error('Missing required Shopify env: SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_APP_URL');
+  throw new Error('Missing required Shopify env: NEXT_PUBLIC_SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_APP_URL');
 }
 
 function getSessionSecret() {

@@ -8,7 +8,7 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
     return new URLSearchParams(window.location.search).get("host") || "";
   }, []);
 
-  const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || process.env.SHOPIFY_API_KEY || "";
+  const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
 
   const missingHost = !host;
   const missingApiKey = !apiKey;
