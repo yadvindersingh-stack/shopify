@@ -13,6 +13,7 @@ import {
   TextField,
 } from "@shopify/polaris";
 import { buildPathWithHost } from "@/lib/host";
+import { useApiFetch } from "@/hooks/useApiFetch";
 
 export default function SetupPage() {
   const [email, setEmail] = useState("");
@@ -24,11 +25,12 @@ export default function SetupPage() {
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
   const withHost = (path: string) => buildPathWithHost(path, hostParam);
+  const apiFetch = useApiFetch();
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/setup", { method: "GET" });
+        const res = await apiFetch("/api/setup", { method: "GET" });
         if (res.ok) {
           const data = await res.json();
           if (data?.email) setEmail(data.email);
@@ -46,12 +48,12 @@ export default function SetupPage() {
   async function handleRunScan() {
     setLoading(true);
     try {
-      await fetch("/api/setup", {
+      await apiFetch("/api/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, daily_enabled: daily, weekly_enabled: weekly }),
       });
-      const runRes = await fetch("/api/insights/run", { method: "POST" });
+      const runRes = await apiFetch("/api/insights/run", { method: "POST" });
       const json = runRes.ok ? await runRes.json() : { insights: [] };
       const count = Array.isArray(json?.insights) ? json.insights.length : 0;
       const base = `/app/insights?scan=complete&count=${count}`;

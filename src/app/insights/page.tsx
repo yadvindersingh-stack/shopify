@@ -15,6 +15,7 @@ import {
 } from "@shopify/polaris";
 import InsightCard from "@/components/InsightCard";
 import { buildPathWithHost } from "@/lib/host";
+import { useApiFetch } from "@/hooks/useApiFetch";
 
 type Insight = {
   id: string;
@@ -36,6 +37,7 @@ export default function InsightsPage() {
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
   const withHost = useCallback((path: string) => buildPathWithHost(path, hostParam), [hostParam]);
+  const apiFetch = useApiFetch();
 
   const lastScan = useMemo(() => {
     if (!insights.length) return "No scans yet";
@@ -55,7 +57,7 @@ export default function InsightsPage() {
   const fetchInsights = useCallback(async () => {
     setLoading(true);
     try {
-      const settingsRes = await fetch("/api/setup", { cache: "no-store" });
+      const settingsRes = await apiFetch("/api/setup", { cache: "no-store" });
       if (settingsRes.ok) {
         const settings = await settingsRes.json();
         if (!settings?.email) {
@@ -64,7 +66,7 @@ export default function InsightsPage() {
           return;
         }
       }
-      const res = await fetch("/api/insights", { cache: "no-store" });
+      const res = await apiFetch("/api/insights", { cache: "no-store" });
       if (res.status === 401) {
         router.replace(withHost("/app/setup"));
         return;
@@ -93,7 +95,7 @@ export default function InsightsPage() {
   const runScan = async () => {
     setScanLoading(true);
     try {
-      const res = await fetch("/api/insights/run", { method: "POST" });
+      const res = await apiFetch("/api/insights/run", { method: "POST" });
       if (res.status === 401) {
         router.replace(withHost("/app/setup"));
         return;

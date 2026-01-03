@@ -14,6 +14,7 @@ import {
   Toast,
 } from "@shopify/polaris";
 import { buildPathWithHost } from "@/lib/host";
+import { useApiFetch } from "@/hooks/useApiFetch";
 import { useSearchParams } from "next/navigation";
 
 const timezones = [
@@ -32,11 +33,12 @@ export default function SettingsPage() {
   const [toast, setToast] = useState<{ content: string } | null>(null);
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
+  const apiFetch = useApiFetch();
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/setup", { method: "GET" });
+        const res = await apiFetch("/api/setup", { method: "GET" });
         if (!res.ok) return;
         const data = await res.json();
         if (data?.email) setEmail(data.email);
@@ -51,7 +53,7 @@ export default function SettingsPage() {
   const handleSave = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/setup", {
+      const res = await apiFetch("/api/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, daily_enabled: daily, weekly_enabled: weekly }),
@@ -69,7 +71,7 @@ export default function SettingsPage() {
   const handleTestEmail = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/email/test", { method: "POST" });
+      const res = await apiFetch("/api/email/test", { method: "POST" });
       if (!res.ok) throw new Error("Failed to send test email");
       setToast({ content: "Test email sent" });
     } catch (err) {

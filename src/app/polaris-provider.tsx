@@ -4,6 +4,7 @@ import { AppProvider, Banner, Frame, Navigation, Page } from "@shopify/polaris";
 import createApp from "@shopify/app-bridge";
 import { usePathname, useSearchParams } from "next/navigation";
 import { buildPathWithHost } from "@/lib/host";
+import { AppBridgeProvider } from "@/lib/app-bridge-context";
 
 export default function PolarisProvider({ children }: { children: ReactNode }) {
   const searchParams = useSearchParams();
@@ -38,9 +39,8 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
   const missingApiKey = !apiKey;
   const missingContext = missingHost || missingApiKey;
 
-  // Initialize App Bridge once for the embedded app environment
-  useMemo(() => {
-    if (missingContext) return undefined;
+  const app = useMemo(() => {
+    if (missingContext) return null;
     return createApp({ apiKey, host, forceRedirect: true });
   }, [apiKey, host, missingContext]);
 
@@ -75,15 +75,17 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
 
   return (
     <AppProvider i18n={{}}>
-      <Frame
-        navigation={
-          <Navigation location={pathname || "/app/insights"}>
-            <Navigation.Section items={navigationItems} />
-          </Navigation>
-        }
-      >
-        {children}
-      </Frame>
+      <AppBridgeProvider app={app}>
+        <Frame
+          navigation={
+            <Navigation location={pathname || "/app/insights"}>
+              <Navigation.Section items={navigationItems} />
+            </Navigation>
+          }
+        >
+          {children}
+        </Frame>
+      </AppBridgeProvider>
     </AppProvider>
   );
 }
