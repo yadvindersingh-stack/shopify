@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   BlockStack,
   Button,
@@ -20,6 +20,9 @@ export default function SetupPage() {
   const [loading, setLoading] = useState(false);
   const [prefillLoading, setPrefillLoading] = useState(true);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const hostParam = searchParams.get("host") || "";
+  const withHost = (path: string) => (hostParam ? `${path}${path.includes("?") ? "&" : "?"}host=${encodeURIComponent(hostParam)}` : path);
 
   useEffect(() => {
     (async () => {
@@ -50,7 +53,8 @@ export default function SetupPage() {
       const runRes = await fetch("/api/insights/run", { method: "POST" });
       const json = runRes.ok ? await runRes.json() : { insights: [] };
       const count = Array.isArray(json?.insights) ? json.insights.length : 0;
-      router.push(`/app/insights?scan=complete&count=${count}`);
+      const base = `/app/insights?scan=complete&count=${count}`;
+      router.push(withHost(base));
     } finally {
       setLoading(false);
     }
@@ -101,7 +105,7 @@ export default function SetupPage() {
                 <Button variant="primary" loading={loading} disabled={primaryDisabled} onClick={handleRunScan}>
                   {loading ? "Running scan..." : "Run my first scan"}
                 </Button>
-                <Button variant="plain" onClick={() => router.push("/app/insights")}>Skip for now</Button>
+                <Button variant="plain" onClick={() => router.push(withHost("/app/insights"))}>Skip for now</Button>
               </InlineStack>
             </BlockStack>
           </Card>

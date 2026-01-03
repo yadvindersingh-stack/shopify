@@ -2,7 +2,7 @@
 import React, { ReactNode, useMemo } from "react";
 import { AppProvider, Banner, Frame, Navigation, Page } from "@shopify/polaris";
 import createApp from "@shopify/app-bridge";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 
 export default function PolarisProvider({ children }: { children: ReactNode }) {
   const host = useMemo(() => {
@@ -10,6 +10,7 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
     return new URLSearchParams(window.location.search).get("host") || "";
   }, []);
 
+  const hostQuery = host ? `?host=${encodeURIComponent(host)}` : "";
   const pathname = usePathname();
 
   const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
@@ -42,12 +43,12 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
 
   const navigationItems = [
     {
-      url: "/app/insights",
+      url: `/app/insights${hostQuery}`,
       label: "Insights",
       selected: pathname?.startsWith("/app/insights") ?? false,
     },
     {
-      url: "/app/settings",
+      url: `/app/settings${hostQuery}`,
       label: "Settings",
       selected: pathname?.startsWith("/app/settings") ?? false,
     },

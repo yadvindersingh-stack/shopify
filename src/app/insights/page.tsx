@@ -33,6 +33,8 @@ export default function InsightsPage() {
   const [banner, setBanner] = useState<{ message: string } | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
+  const hostParam = searchParams.get("host") || "";
+  const withHost = useCallback((path: string) => (hostParam ? `${path}?host=${encodeURIComponent(hostParam)}` : path), [hostParam]);
 
   const lastScan = useMemo(() => {
     if (!insights.length) return "No scans yet";
@@ -57,13 +59,13 @@ export default function InsightsPage() {
         const settings = await settingsRes.json();
         if (!settings?.email) {
           setLoading(false);
-          router.replace("/app/setup");
+          router.replace(withHost("/app/setup"));
           return;
         }
       }
       const res = await fetch("/api/insights", { cache: "no-store" });
       if (res.status === 401) {
-        router.replace("/app/setup");
+        router.replace(withHost("/app/setup"));
         return;
       }
       const data = await res.json();
@@ -83,16 +85,16 @@ export default function InsightsPage() {
     const count = searchParams.get("count");
     if (scan === "complete") {
       setBanner({ message: `Scan complete — ${count ?? "0"} insights found.` });
-      router.replace("/app/insights");
+      router.replace(withHost("/app/insights"));
     }
-  }, [router, searchParams]);
+  }, [router, searchParams, withHost]);
 
   const runScan = async () => {
     setScanLoading(true);
     try {
       const res = await fetch("/api/insights/run", { method: "POST" });
       if (res.status === 401) {
-        router.replace("/app/setup");
+        router.replace(withHost("/app/setup"));
         return;
       }
       const json = await res.json();
@@ -114,7 +116,7 @@ export default function InsightsPage() {
       title="Today’s insights"
       subtitle={`Last scan: ${lastScan}`}
       primaryAction={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
-      secondaryActions={[{ content: "Settings", onAction: () => router.push("/app/settings") }]}
+      secondaryActions={[{ content: "Settings", onAction: () => router.push(withHost("/app/settings")) }]}
     >
       <Layout>
         <Layout.Section>
@@ -134,7 +136,7 @@ export default function InsightsPage() {
                   heading="Nothing critical today"
                   image="https://cdn.shopify.com/static/images/admin/emptystate.svg"
                   action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
-                  secondaryAction={{ content: "Settings", onAction: () => router.push("/app/settings") }}
+                  secondaryAction={{ content: "Settings", onAction: () => router.push(withHost("/app/settings")) }}
                 >
                   <Text as="p" tone="subdued">
                     Your store looks stable based on the last scan. We’ll email you when something changes.

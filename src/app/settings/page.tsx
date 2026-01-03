@@ -13,6 +13,7 @@ import {
   TextField,
   Toast,
 } from "@shopify/polaris";
+import { useSearchParams } from "next/navigation";
 
 const timezones = [
   { label: "Store timezone (default)", value: "store" },
@@ -28,6 +29,8 @@ export default function SettingsPage() {
   const [timezone, setTimezone] = useState("store");
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ content: string; tone?: "magic" } | null>(null);
+    const searchParams = useSearchParams();
+    const hostParam = searchParams.get("host") || "";
 
   useEffect(() => {
     (async () => {
