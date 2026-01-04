@@ -1,8 +1,10 @@
+// ...existing code...
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
+import "../globals.css";
 import "@shopify/polaris/build/esm/styles.css";
-import PolarisProvider from "./polaris-provider";
+// ...existing code...
+import PolarisProvider from "../polaris-provider";
 import { Suspense } from "react";
 
 const geistSans = Geist({
