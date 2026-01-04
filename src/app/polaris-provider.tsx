@@ -1,7 +1,6 @@
 "use client";
 import React, { ReactNode, useEffect, useMemo, useState } from "react";
 import { AppProvider, Banner, Frame, Navigation, Page } from "@shopify/polaris";
-import createApp from "@shopify/app-bridge";
 import { usePathname, useSearchParams } from "next/navigation";
 import { buildPathWithHost } from "@/lib/host";
 import { AppBridgeProvider } from "@/lib/app-bridge-context";
@@ -39,11 +38,6 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
   const missingApiKey = !apiKey;
   const missingContext = missingHost || missingApiKey;
 
-  const app = useMemo(() => {
-    if (missingContext) return null;
-    return createApp({ apiKey, host, forceRedirect: true });
-  }, [apiKey, host, missingContext]);
-
   if (missingContext) {
     return (
       <AppProvider i18n={{}}>
@@ -75,7 +69,7 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
 
   return (
     <AppProvider i18n={{}}>
-      <AppBridgeProvider app={app}>
+      <AppBridgeProvider apiKey={apiKey} host={host}>
         <Frame
           navigation={
             <Navigation location={pathname || "/app/insights"}>
