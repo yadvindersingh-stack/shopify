@@ -24,18 +24,22 @@ export async function middleware(req: NextRequest) {
   const shop = bearerShop || cookieShop;
 
   if (!shop) {
-    const shopParam = req.nextUrl.searchParams.get('shop');
-    const hostParam = req.nextUrl.searchParams.get('host');
-    if (shopParam) {
+    const shopParam = req.nextUrl.searchParams.get("shop");
+    const hostParam = req.nextUrl.searchParams.get("host");
+
+    // IMPORTANT: if this is a UI page request and Shopify provided shop,
+    // kick off auth instead of sending to /app/error.
+    if (pathname.startsWith("/app") && shopParam) {
       const url = req.nextUrl.clone();
-      url.pathname = '/api/auth/start';
-      if (hostParam) url.searchParams.set('host', hostParam);
-      url.searchParams.set('shop', shopParam);
+      url.pathname = "/api/auth/start";
+      url.searchParams.set("shop", shopParam);
+      if (hostParam) url.searchParams.set("host", hostParam);
       return NextResponse.redirect(url);
     }
+
+    // For API calls (or UI with no shop param), go to error
     const errUrl = req.nextUrl.clone();
-    errUrl.pathname = '/app/error';
-    // keep existing search (including host) so context isn't lost
+    errUrl.pathname = "/app/error";
     return NextResponse.redirect(errUrl);
   }
 
