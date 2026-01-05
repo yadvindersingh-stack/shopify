@@ -1,51 +1,30 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { decodeShopFromBearer, readSessionFromCookie } from './lib/shopify';
+import { NextRequest, NextResponse } from "next/server";
+import { decodeShopFromBearer, readSessionFromCookie } from "./lib/shopify";
 
-const AUTH_ROUTES = ['/api/auth/start', '/api/auth/callback'];
-const PUBLIC_APP_ROUTES = ['/app/error'];
+const AUTH_ROUTES = ["/api/auth/start", "/api/auth/callback"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (AUTH_ROUTES.some(route => pathname.startsWith(route))) {
-    return NextResponse.next();
-  }
-  if (!pathname.startsWith('/app') && !pathname.startsWith('/api')) {
+
+  if (AUTH_ROUTES.some((r) => pathname.startsWith(r))) {
     return NextResponse.next();
   }
 
-  if (PUBLIC_APP_ROUTES.includes(pathname)) {
-    return NextResponse.next();
-  }
-
-  const authHeader = req.headers.get('authorization') || undefined;
+  const authHeader = req.headers.get("authorization") || undefined;
   const bearerShop = await decodeShopFromBearer(authHeader);
-  const cookieHeader = req.headers.get('cookie') || undefined;
+
+  const cookieHeader = req.headers.get("cookie") || undefined;
   const cookieShop = await readSessionFromCookie(cookieHeader);
+
   const shop = bearerShop || cookieShop;
 
   if (!shop) {
-    const shopParam = req.nextUrl.searchParams.get("shop");
-    const hostParam = req.nextUrl.searchParams.get("host");
-
-    // IMPORTANT: if this is a UI page request and Shopify provided shop,
-    // kick off auth instead of sending to /app/error.
-    if (pathname.startsWith("/app") && shopParam) {
-      const url = req.nextUrl.clone();
-      url.pathname = "/api/auth/start";
-      url.searchParams.set("shop", shopParam);
-      if (hostParam) url.searchParams.set("host", hostParam);
-      return NextResponse.redirect(url);
-    }
-
-    // For API calls (or UI with no shop param), go to error
-    const errUrl = req.nextUrl.clone();
-    errUrl.pathname = "/app/error";
-    return NextResponse.redirect(errUrl);
+    return NextResponse.json({ error: "Missing shop context" }, { status: 401 });
   }
 
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ['/app/:path*', '/api/:path*'],
+  matcher: ["/api/:path*"],
 };
