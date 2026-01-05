@@ -8,21 +8,37 @@ function buildHost(shop: string, existingHost?: string | null) {
   return encoded;
 }
 
+function parseState(state?: string | null): { host?: string } {
+  if (!state) return {};
+  try {
+    const json = Buffer.from(state, "base64url").toString("utf8");
+    return JSON.parse(json);
+  } catch {
+    return {};
+  }
+}
+
 export async function GET(req: NextRequest) {
-  const shop = req.nextUrl.searchParams.get('shop');
-  const code = req.nextUrl.searchParams.get('code');
-  const hostParam = req.nextUrl.searchParams.get('host');
+  const shop = req.nextUrl.searchParams.get("shop");
+  const code = req.nextUrl.searchParams.get("code");
+  const hostParam = req.nextUrl.searchParams.get("host");
+  const state = req.nextUrl.searchParams.get("state");
+
   if (!shop || !code) {
-    return NextResponse.redirect(new URL('/app/error', process.env.SHOPIFY_APP_URL).toString());
+    return NextResponse.redirect(new URL("/app/error", process.env.SHOPIFY_APP_URL).toString());
   }
-  const access_token = await exchangeCodeForToken(shop, code);
-  const { error } = await supabase.from('shops').upsert({ shop_domain: shop, access_token });
-  if (error) {
-    return NextResponse.json({ error: 'Failed to persist shop', details: error.message }, { status: 500 });
-  }
-  const host = buildHost(shop, hostParam);
-  const target = new URL(`/app/setup?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`, process.env.SHOPIFY_APP_URL).toString();
+
+  const stateHost = parseState(state).host;
+  const host = buildHost(shop, hostParam || stateHost);
+
+  // ... token exchange + upsert ...
+
+  const target = new URL(
+    `/app/setup?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`,
+    process.env.SHOPIFY_APP_URL
+  ).toString();
+
   const res = NextResponse.redirect(target);
-  res.headers.append('Set-Cookie', await signSessionCookie(shop));
+  res.headers.append("Set-Cookie", await signSessionCookie(shop));
   return res;
 }
