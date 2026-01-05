@@ -11,12 +11,7 @@ export function useApiFetch() {
   return useCallback(async (...args: FetchArgs) => {
     const [input, init = {}] = args;
     if (!app) {
-      const message = "Shopify App Bridge app is not initialized. Ensure the app is loaded from the Shopify Admin with a host parameter.";
-      if (process.env.NODE_ENV !== "production") {
-        throw new Error(message);
-      }
-      console.warn(message);
-      return fetch(input, init);
+      throw new Error("App Bridge not ready yet");
     }
     const token = await getSessionToken(app);
     const headers = new Headers(init.headers || {});

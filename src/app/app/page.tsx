@@ -11,19 +11,56 @@ export default function AppHome() {
 
   useEffect(() => {
     let cancelled = false;
-    const host = searchParams.get("host") || undefined;
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    async function waitForHost(maxWaitMs = 1500, pollMs = 100) {
+      const start = Date.now();
+      let hostValue = searchParams.get("host") || undefined;
+      while (!hostValue && Date.now() - start < maxWaitMs && !cancelled) {
+        await sleep(pollMs);
+        hostValue = searchParams.get("host") || undefined;
+      }
+      return hostValue;
+    }
 
     async function redirect() {
-      try {
-        const res = await apiFetch("/api/setup", { cache: "no-store" });
-        const json = await res.json();
-        const hasEmail = Boolean(json?.email);
-        const target = hasEmail ? "/app/insights" : "/app/setup";
-        const path = buildPathWithHost(target, host);
-        if (!cancelled) router.replace(path);
-      } catch (error) {
-        const fallback = buildPathWithHost("/app/setup", host);
-        if (!cancelled) router.replace(fallback);
+      const host = await waitForHost();
+      if (cancelled) return;
+
+      if (!host) {
+        router.replace(buildPathWithHost("/app/setup"));
+        return;
+      }
+
+      const maxAttempts = 6;
+      const retryDelayMs = 250;
+
+      for (let attempt = 0; attempt < maxAttempts && !cancelled; attempt++) {
+        try {
+          const res = await apiFetch("/api/setup", { cache: "no-store" });
+          const json = await res.json();
+          const hasEmail = Boolean(json?.email);
+          const target = hasEmail ? "/app/insights" : "/app/setup";
+          const path = buildPathWithHost(target, host);
+          if (cancelled) return;
+          router.replace(path);
+          return;
+        } catch (error) {
+          const shouldRetry =
+            error instanceof Error &&
+            error.message === "App Bridge not ready yet" &&
+            attempt < maxAttempts - 1;
+
+          if (shouldRetry) {
+            await sleep(retryDelayMs);
+            if (cancelled) return;
+            continue;
+          }
+
+          if (cancelled) return;
+          router.replace(buildPathWithHost("/app/setup", host));
+          return;
+        }
       }
     }
 
