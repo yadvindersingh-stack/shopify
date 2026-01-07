@@ -2,7 +2,7 @@
 
 client_id = "653b989bca01b5200c1913798cb0f9fe"
 name = "storepulse"
-application_url = "https://merchpulse.vercel.app"
+application_url = "https://merchpulse.vercel.app/app"
 embedded = true
 
 [build]
