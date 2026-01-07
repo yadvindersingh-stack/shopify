@@ -6,7 +6,10 @@ const AUTH_ROUTES = ["/api/auth/start", "/api/auth/callback"];
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (AUTH_ROUTES.some((r) => pathname.startsWith(r))) {
+ // if (AUTH_ROUTES.some((r) => pathname.startsWith(r))) {
+   // return NextResponse.next();
+  //}
+    if (pathname.startsWith("/api/debug")) {
     return NextResponse.next();
   }
 
