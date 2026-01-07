@@ -2,7 +2,7 @@
 
 client_id = "653b989bca01b5200c1913798cb0f9fe"
 name = "storepulse"
-application_url = "https://shopify.dev/apps/default-app-home"
+application_url = "https://merchpulse.vercel.app"
 embedded = true
 
 [build]
@@ -16,4 +16,4 @@ api_version = "2026-04"
 scopes = ""
 
 [auth]
-redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+redirect_urls = ["https://merchpulse.vercel.app/api/auth/callback"]
