@@ -1,4 +1,5 @@
 "use client";
+
 import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { buildPathWithHost } from "@/lib/host";
@@ -11,60 +12,40 @@ export default function AppHome() {
 
   useEffect(() => {
     let cancelled = false;
-    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-    async function waitForHost(maxWaitMs = 1500, pollMs = 100) {
-      const start = Date.now();
-      let hostValue = searchParams.get("host") || undefined;
-      while (!hostValue && Date.now() - start < maxWaitMs && !cancelled) {
-        await sleep(pollMs);
-        hostValue = searchParams.get("host") || undefined;
-      }
-      return hostValue;
-    }
+    const host = searchParams.get("host") || "";
+    const shop = searchParams.get("shop") || "";
 
-    async function redirect() {
-      const host = await waitForHost();
-      if (cancelled) return;
-
+    async function boot() {
+      // Must have host for embedded context nav
       if (!host) {
-        router.replace(buildPathWithHost("/app/setup"));
+        router.replace("/app/error");
         return;
       }
 
-      const maxAttempts = 6;
-      const retryDelayMs = 250;
+      const res = await apiFetch(`/api/install-status?shop=${encodeURIComponent(shop)}`, {
+        cache: "no-store",
+      });
 
-      for (let attempt = 0; attempt < maxAttempts && !cancelled; attempt++) {
-        try {
-          const res = await apiFetch("/api/setup", { cache: "no-store" });
-          const json = await res.json();
-          const hasEmail = Boolean(json?.email);
-          const target = hasEmail ? "/app/insights" : "/app/setup";
-          const path = buildPathWithHost(target, host);
-          if (cancelled) return;
-          router.replace(path);
-          return;
-        } catch (error) {
-          const shouldRetry =
-            error instanceof Error &&
-            error.message === "App Bridge not ready yet" &&
-            attempt < maxAttempts - 1;
+      const text = await res.text();
+      const json = text ? JSON.parse(text) : null;
 
-          if (shouldRetry) {
-            await sleep(retryDelayMs);
-            if (cancelled) return;
-            continue;
-          }
+      if (cancelled) return;
 
-          if (cancelled) return;
-          router.replace(buildPathWithHost("/app/setup", host));
-          return;
-        }
+      if (!json?.installed) {
+        // Kick off OAuth explicitly
+        const url = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+        window.location.href = url;
+        return;
       }
+
+      router.replace(buildPathWithHost("/app/insights", host));
     }
 
-    redirect();
+    boot().catch(() => {
+      if (!cancelled) router.replace(buildPathWithHost("/app/error", host));
+    });
+
     return () => {
       cancelled = true;
     };
