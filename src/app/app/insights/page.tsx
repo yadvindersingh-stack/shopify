@@ -95,12 +95,33 @@ export default function InsightsPage() {
   const runScan = async () => {
     setScanLoading(true);
     try {
-      const res = await apiFetch("/api/insights/run", { method: "POST" });
+      const res = await apiFetch("/api/insights/run", { method: "POST", cache: "no-store" });
       if (res.status === 401) {
         router.replace(withHost("/app/setup"));
         return;
       }
-      const json = await res.json();
+
+const text = await res.text(); // read raw first
+let json: any = null;
+
+try {
+  json = text ? JSON.parse(text) : null;
+} catch {
+  // not JSON (could be HTML error page)
+}
+
+if (!res.ok) {
+  console.error("Insights run failed:", res.status, text?.slice(0, 500));
+  throw new Error(`Insights API failed: ${res.status}`);
+}
+
+if (!json) {
+  console.error("Insights API returned empty/non-JSON body:", res.status, text?.slice(0, 500));
+  throw new Error("Insights API returned invalid response");
+}
+
+// use json.insight, etc.
+
       const count = Array.isArray(json?.insights) ? json.insights.length : 0;
       setBanner({ message: `Scan complete — ${count} insights found.` });
       await fetchInsights();
