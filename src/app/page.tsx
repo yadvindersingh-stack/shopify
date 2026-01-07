@@ -1,17 +1,5 @@
 import { redirect } from "next/navigation";
 
-export default function RootPage({
-  searchParams,
-}: {
-  searchParams: Record<string, string | string[] | undefined>;
-}) {
-  const qs = new URLSearchParams();
-
-  for (const [k, v] of Object.entries(searchParams)) {
-    if (typeof v === "string") qs.set(k, v);
-    else if (Array.isArray(v)) v.forEach((vv) => qs.append(k, vv));
-  }
-
-  const query = qs.toString();
-  redirect(`/app${query ? `?${query}` : ""}`);
+export default function Root() {
+  redirect("/app");
 }
