@@ -125,8 +125,11 @@ if (!json) {
       const count = Array.isArray(json?.insights) ? json.insights.length : 0;
       setBanner({ message: `Scan complete — ${count} insights found.` });
       await fetchInsights();
+    } catch (e: any) {
+      console.error("Failed to run insights", e);
+      throw e;
     } finally {
-      setScanLoading(false);
+      setLoading(false);
     }
   };
 
