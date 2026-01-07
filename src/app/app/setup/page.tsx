@@ -64,33 +64,36 @@ function SetupPageInner() {
         return;
       }
 
-const text = await res.text(); // read raw first
-let json: any = null;
+      const text = await res.text(); // read raw first
+      let json: any = null;
 
-try {
-  json = text ? JSON.parse(text) : null;
-} catch {
-  // not JSON (could be HTML error page)
-}
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        // not JSON (could be HTML error page)
+      }
 
-if (!res.ok) {
-  console.error("Insights run failed:", res.status, text?.slice(0, 500));
-  throw new Error(`Insights API failed: ${res.status}`);
-}
+      if (!res.ok) {
+        console.error("Insights run failed:", res.status, text?.slice(0, 500));
+        throw new Error(`Insights API failed: ${res.status}`);
+      }
 
-if (!json) {
-  console.error("Insights API returned empty/non-JSON body:", res.status, text?.slice(0, 500));
-  throw new Error("Insights API returned invalid response");
-}
+      if (!json) {
+        console.error("Insights API returned empty/non-JSON body:", res.status, text?.slice(0, 500));
+        throw new Error("Insights API returned invalid response");
+      }
 
       const count = Array.isArray(json?.insights) ? json.insights.length : 0;
       const base = `/app/insights?scan=complete&count=${count}`;
       router.push(withHost(base));
+    } catch (e: any) {
+      console.error("Failed to run insights", e);
+      throw e;
     } finally {
       setLoading(false);
     }
   }
-
+      
   return (
     <Page title="Your daily store action list" subtitle="We scan your store and email the most important things to fix. No changes are made automatically.">
       <Layout>
