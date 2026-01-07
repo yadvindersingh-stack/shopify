@@ -88,6 +88,7 @@ export async function GET(req: NextRequest) {
     // IMPORTANT: if email is still NOT NULL in schema, this MUST be nullable or provide a fallback.
     // Safer fallback so install never blocks:
     if (!email) email = `unknown@${shop}`;
+console.log("SUPABASE_URL in runtime:", process.env.SUPABASE_URL);
 
     const { error } = await supabase
       .from("shops")
