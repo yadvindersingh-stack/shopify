@@ -95,7 +95,9 @@ export default function InsightsPage() {
   const runScan = async () => {
     setScanLoading(true);
     try {
-      const res = await apiFetch("/api/insights/run", { method: "POST", cache: "no-store" });
+      const apiFetch = useApiFetch();
+const res = await apiFetch("/api/insights/run", { method: "POST" });
+
       if (res.status === 401) {
         router.replace(withHost("/app/setup"));
         return;
