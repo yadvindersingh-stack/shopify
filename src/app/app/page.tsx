@@ -10,14 +10,26 @@ export default function AppEntry() {
     const host = searchParams.get("host") || "";
     const shop = searchParams.get("shop") || "";
 
-    // If either is missing, we cannot start OAuth in embedded mode.
     if (!host || !shop) {
       window.location.href = "/app/error";
       return;
     }
 
-    // Always go to auth start first; auth start can no-op if already installed later (we can optimize later).
-    window.location.href = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+    (async () => {
+      const res = await fetch(`/api/install-status?shop=${encodeURIComponent(shop)}`, {
+        cache: "no-store",
+      });
+      const json = await res.json();
+
+      if (!json?.installed) {
+        // Start OAuth explicitly (legacy OAuth endpoints still work even if legacy install flow is off)
+        window.location.href = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+        return;
+      }
+
+      // Already installed → go to insights
+      window.location.href = `/app/insights?host=${encodeURIComponent(host)}`;
+    })();
   }, [searchParams]);
 
   return null;

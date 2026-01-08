@@ -12,6 +12,8 @@ export async function middleware(req: NextRequest) {
     if (pathname.startsWith("/api/debug")) {
     return NextResponse.next();
   }
+if (pathname.startsWith("/api/install-status")) return NextResponse.next();
+
 
   const authHeader = req.headers.get("authorization") || undefined;
   const bearerShop = await decodeShopFromBearer(authHeader);
