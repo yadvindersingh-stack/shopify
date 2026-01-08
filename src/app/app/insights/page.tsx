@@ -1,9 +1,9 @@
 "use client";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   BlockStack,
-  Button,
   Card,
   EmptyState,
   InlineStack,
@@ -30,22 +30,25 @@ type Insight = {
 
 export default function InsightsPage() {
   const [insights, setInsights] = useState<Insight[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [scanLoading, setScanLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState(true);
+  const [scanLoading, setScanLoading] = useState(false);
   const [banner, setBanner] = useState<{ message: string } | null>(null);
+
   const router = useRouter();
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
-  const withHost = useCallback((path: string) => buildPathWithHost(path, hostParam), [hostParam]);
   const apiFetch = useApiFetch();
+
+  const withHost = useCallback(
+    (path: string) => buildPathWithHost(path, hostParam),
+    [hostParam]
+  );
 
   const lastScan = useMemo(() => {
     if (!insights.length) return "No scans yet";
     const created = insights[0].created_at ? new Date(insights[0].created_at) : null;
     if (!created) return "No scans yet";
-    const now = Date.now();
-    const diffMs = now - created.getTime();
-    const diffMinutes = Math.floor(diffMs / 60000);
+    const diffMinutes = Math.floor((Date.now() - created.getTime()) / 60000);
     if (diffMinutes < 1) return "Just now";
     if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes === 1 ? "" : "s"} ago`;
     const diffHours = Math.floor(diffMinutes / 60);
@@ -57,27 +60,43 @@ export default function InsightsPage() {
   const fetchInsights = useCallback(async () => {
     setLoading(true);
     try {
+      // 1) Check setup
       const settingsRes = await apiFetch("/api/setup", { cache: "no-store" });
+
       if (settingsRes.ok) {
-        const settings = await settingsRes.json();
+        const settingsText = await settingsRes.text();
+        const settings = settingsText ? JSON.parse(settingsText) : null;
+
         if (!settings?.email) {
-          setLoading(false);
           router.replace(withHost("/app/setup"));
           return;
         }
-      }
-      const res = await apiFetch("/api/insights", { cache: "no-store" });
-      if (res.status === 401) {
-        router.replace(withHost("/app/setup"));
+      } else if (settingsRes.status === 401) {
+        router.replace(withHost("/app/error"));
         return;
       }
-      const data = await res.json();
-      const sliced = Array.isArray(data) ? data.slice(0, 5) : [];
-      setInsights(sliced);
+
+      // 2) Load insights list
+      const res = await apiFetch("/api/insights", { cache: "no-store" });
+
+      if (res.status === 401) {
+        router.replace(withHost("/app/error"));
+        return;
+      }
+      if (!res.ok) {
+        const t = await res.text();
+        console.error("Insights list failed:", res.status, t?.slice(0, 300));
+        setInsights([]);
+        return;
+      }
+
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : [];
+      setInsights(Array.isArray(data) ? data.slice(0, 5) : []);
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [apiFetch, router, withHost]);
 
   useEffect(() => {
     fetchInsights();
@@ -92,48 +111,45 @@ export default function InsightsPage() {
     }
   }, [router, searchParams, withHost]);
 
-  const runScan = async () => {
+  const runScan = useCallback(async () => {
     setScanLoading(true);
     try {
-      const apiFetch = useApiFetch();
-const res = await apiFetch("/api/insights/run", { method: "POST" });
+      // ✅ IMPORTANT: use the apiFetch hook instance from top-level (includes Authorization)
+      const res = await apiFetch("/api/insights/run", { method: "POST" });
 
+      // If shop context missing, route to error (not setup)
       if (res.status === 401) {
-        router.replace(withHost("/app/setup"));
+        router.replace(withHost("/app/error"));
         return;
       }
 
-const text = await res.text(); // read raw first
-let json: any = null;
+      const text = await res.text();
+      let json: any = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        // ignore
+      }
 
-try {
-  json = text ? JSON.parse(text) : null;
-} catch {
-  // not JSON (could be HTML error page)
-}
+      if (!res.ok) {
+        console.error("Insights run failed:", res.status, text?.slice(0, 500));
+        // If shop not installed/token missing, take user to setup/connect flow
+        if (res.status === 403) {
+          router.replace(withHost("/app/setup"));
+          return;
+        }
+        throw new Error(`Insights API failed: ${res.status}`);
+      }
 
-if (!res.ok) {
-  console.error("Insights run failed:", res.status, text?.slice(0, 500));
-  throw new Error(`Insights API failed: ${res.status}`);
-}
+      // Your run endpoint returns { insight }, not { insights }
+      const count = json?.insight ? 1 : 0;
+      setBanner({ message: `Scan complete — ${count} insight${count === 1 ? "" : "s"} found.` });
 
-if (!json) {
-  console.error("Insights API returned empty/non-JSON body:", res.status, text?.slice(0, 500));
-  throw new Error("Insights API returned invalid response");
-}
-
-// use json.insight, etc.
-
-      const count = Array.isArray(json?.insights) ? json.insights.length : 0;
-      setBanner({ message: `Scan complete — ${count} insights found.` });
       await fetchInsights();
-    } catch (e: any) {
-      console.error("Failed to run insights", e);
-      throw e;
     } finally {
-      setLoading(false);
+      setScanLoading(false);
     }
-  };
+  }, [apiFetch, router, withHost, fetchInsights]);
 
   const shouldShowEmpty = useMemo(() => {
     if (!insights.length) return true;
@@ -157,7 +173,9 @@ if (!json) {
             {loading ? (
               <InlineStack align="center">
                 <Spinner accessibilityLabel="Loading insights" size="small" />
-                <Text as="span" variant="bodyMd" tone="subdued">Loading insights…</Text>
+                <Text as="span" variant="bodyMd" tone="subdued">
+                  Loading insights…
+                </Text>
               </InlineStack>
             ) : shouldShowEmpty ? (
               <Card>
@@ -165,7 +183,10 @@ if (!json) {
                   heading="Nothing critical today"
                   image="https://cdn.shopify.com/static/images/admin/emptystate.svg"
                   action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
-                  secondaryAction={{ content: "Settings", onAction: () => router.push(withHost("/app/settings")) }}
+                  secondaryAction={{
+                    content: "Settings",
+                    onAction: () => router.push(withHost("/app/settings")),
+                  }}
                 >
                   <Text as="p" tone="subdued">
                     Your store looks stable based on the last scan. We’ll email you when something changes.
