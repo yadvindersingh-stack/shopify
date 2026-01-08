@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { resolveShop } from '@/lib/shopify';
 
+
 export async function GET(req: NextRequest) {
   // Temporary logging to debug missing shop context (remove after verification).
   console.log('insights GET authorization', req.headers.get('authorization'));

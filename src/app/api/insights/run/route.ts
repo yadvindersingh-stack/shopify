@@ -5,26 +5,26 @@ import { INSIGHT_CONTEXT_QUERY } from "@/lib/queries/insight-context";
 import { buildInsightContext } from "@/core/insights/build-context";
 import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
 import { getShopFromRequest } from "@/lib/shop-context";
+import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
+
 
 export async function POST(req: NextRequest) {
   try {
-    const shop = await getShopFromRequest(req);
-    if (!shop) {
-      return NextResponse.json({ error: "Missing shop context" }, { status: 401 });
-    }
+    const shop = getShopFromRequestAuthHeader(req.headers.get("authorization"));
+if (!shop) {
+  return NextResponse.json({ error: "Missing shop context" }, { status: 401 });
+}
 
-    const { data: shopRow } = await supabase
-      .from("shops")
-      .select("access_token")
-      .eq("shop_domain", shop)
-      .single();
+    const { data : shopRow } = await supabase
+  .from("shops")
+  .select("access_token")
+  .eq("shop_domain", shop)
+  .maybeSingle();
 
-    if (!shopRow?.access_token) {
-      return NextResponse.json(
-        { error: "Shop not installed or missing access token" },
-        { status: 403 }
-      );
-    }
+if (!shopRow?.access_token) {
+  return NextResponse.json({ error: "Shop not installed or missing access token" }, { status: 403 });
+}
+
 
     const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
     const ordersQuery = `created_at:>=${since}`;
