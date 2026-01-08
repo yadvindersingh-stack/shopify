@@ -1,8 +1,8 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "653b989bca01b5200c1913798cb0f9fe"
+client_id = "3d3d641d69affa2d21903ec602e98fef"
 name = "storepulse"
-application_url = "https://merchpulse.vercel.app/app"
+application_url = "https://merchpulse.vercel.app"
 embedded = true
 
 [build]
