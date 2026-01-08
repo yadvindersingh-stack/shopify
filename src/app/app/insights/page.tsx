@@ -84,11 +84,11 @@ export default function InsightsPage() {
         return;
       }
       if (!res.ok) {
-        const t = await res.text();
-        console.error("Insights list failed:", res.status, t?.slice(0, 300));
-        setInsights([]);
-        return;
-      }
+  const t = await res.text();
+  console.error("Insights list failed:", res.status, t?.slice(0, 300));
+  setInsights([]);
+  return;
+}
 
       const text = await res.text();
       const data = text ? JSON.parse(text) : [];
