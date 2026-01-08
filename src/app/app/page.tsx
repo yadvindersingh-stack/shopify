@@ -15,7 +15,7 @@ export default function AppEntry() {
       return;
     }
 
-    // Always start OAuth for now (until persistence is stable)
+    // Kick OAuth every time until we confirm tokens persist.
     window.location.href = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
   }, [sp]);
 

@@ -4,6 +4,10 @@ import { supabase } from "@/lib/supabase";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const APP_URL = (process.env.SHOPIFY_APP_URL || "").replace(/\/+$/, "");
+const API_KEY = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY!;
+const API_SECRET = process.env.SHOPIFY_API_SECRET!;
+
 function parseState(state?: string | null): { host?: string } {
   if (!state) return {};
   try {
@@ -14,32 +18,76 @@ function parseState(state?: string | null): { host?: string } {
   }
 }
 
-export async function GET(req: NextRequest) {
-  const shop = (req.nextUrl.searchParams.get("shop") || "").toLowerCase();
-  const code = req.nextUrl.searchParams.get("code") || "";
-  const hostParam = req.nextUrl.searchParams.get("host");
-  const state = req.nextUrl.searchParams.get("state");
+function normalizeShop(shop: string) {
+  return String(shop || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "");
+}
 
-  const stateHost = parseState(state).host;
-  const host = hostParam || stateHost || "";
-
-  // MARKER WRITE — proves callback is hit
-  const marker = `cb-hit-${Date.now()}.myshopify.com`;
-
-  const { error } = await supabase.from("shops").upsert({
-    shop_domain: marker,
-    access_token: "marker",
-    email: "marker@example.com",
+async function exchangeCodeForToken(shop: string, code: string) {
+  const url = `https://${shop}/admin/oauth/access_token`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: API_KEY,
+      client_secret: API_SECRET,
+      code,
+    }),
   });
 
-  if (error) {
-    return NextResponse.json({ ok: false, step: "upsert_marker", error: error.message }, { status: 500 });
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (!res.ok) {
+    throw new Error(`Token exchange failed: ${res.status} ${text?.slice(0, 200)}`);
   }
 
-  return NextResponse.json({
-    ok: true,
-    hit: "oauth_callback",
-    received: { shop, hasCode: Boolean(code), hostPresent: Boolean(host) },
-    wrote_marker_row: marker,
-  });
+  const token = json?.access_token;
+  if (!token) throw new Error("Token exchange returned no access_token");
+  return token as string;
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const shopParam = req.nextUrl.searchParams.get("shop");
+    const code = req.nextUrl.searchParams.get("code");
+    const hostParam = req.nextUrl.searchParams.get("host");
+    const state = req.nextUrl.searchParams.get("state");
+
+    if (!shopParam || !code) {
+      return NextResponse.redirect(new URL("/app/error", APP_URL).toString());
+    }
+
+    const shop = normalizeShop(shopParam);
+    const host = hostParam || parseState(state).host || "";
+
+    const accessToken = await exchangeCodeForToken(shop, code);
+
+    const { error } = await supabase.from("shops").upsert(
+      {
+        shop_domain: shop,
+        access_token: accessToken,
+        // keep these optional in schema if you can; otherwise set defaults
+        email: "unknown@example.com",
+        timezone: "UTC",
+      },
+      { onConflict: "shop_domain" }
+    );
+
+    if (error) {
+      return NextResponse.json({ error: "Failed to persist shop token", details: error.message }, { status: 500 });
+    }
+
+    // After install, go to insights (setup later)
+    const target = new URL(`/app/insights?host=${encodeURIComponent(host)}`, APP_URL).toString();
+    return NextResponse.redirect(target);
+  } catch (e: any) {
+    return NextResponse.json({ error: "OAuth callback failed", details: e?.message || String(e) }, { status: 500 });
+  }
 }
