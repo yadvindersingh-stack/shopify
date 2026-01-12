@@ -57,6 +57,35 @@ export default function InsightsPage() {
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
   }, [insights]);
 
+  async function reconnect() {
+  const host = hostParam || window.localStorage.getItem("shopifyHost") || "";
+  if (!host) {
+    router.replace("/app/error"); // truly missing embedded context
+    return;
+  }
+
+  // whoami already works for you
+  const meRes = await apiFetch("/api/whoami", { cache: "no-store" });
+  if (!meRes.ok) {
+    router.replace(withHost("/app/error"));
+    return;
+  }
+  if (meRes.status === 403) {
+  await reconnect();
+  return;
+}
+  const me = await meRes.json();
+  const shop = me?.shop;
+  if (!shop) {
+    router.replace(withHost("/app/error"));
+    return;
+  }
+
+  // IMPORTANT: use window.top for embedded
+  window.top!.location.href = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+}
+
+
   const fetchInsights = useCallback(async () => {
     setLoading(true);
     try {
@@ -71,6 +100,10 @@ export default function InsightsPage() {
           router.replace(withHost("/app/setup"));
           return;
         }
+        if (settingsRes.status === 403) {
+  await reconnect();
+  return;
+}
       } else if (settingsRes.status === 401) {
         router.replace(withHost("/app/error"));
         return;
@@ -81,7 +114,10 @@ export default function InsightsPage() {
       const me = await apiFetch("/api/whoami");
 console.log("whoami", me.status, await me.text());
 
-
+if (res.status === 403) {
+  await reconnect();
+  return;
+}
       if (res.status === 401) {
         router.replace(withHost("/app/error"));
         return;
@@ -119,6 +155,10 @@ console.log("whoami", me.status, await me.text());
     try {
       // ✅ IMPORTANT: use the apiFetch hook instance from top-level (includes Authorization)
       const res = await apiFetch("/api/insights/run", { method: "POST" });
+      if (res.status === 403) {
+  await reconnect();
+  return;
+}
 
       // If shop context missing, route to error (not setup)
       if (res.status === 401) {
@@ -139,6 +179,7 @@ console.log("whoami", me.status, await me.text());
         // If shop not installed/token missing, take user to setup/connect flow
         if (res.status === 403) {
           router.replace(withHost("/app/setup"));
+          await reconnect();
           return;
         }
         throw new Error(`Insights API failed: ${res.status}`);

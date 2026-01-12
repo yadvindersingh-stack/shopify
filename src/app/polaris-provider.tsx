@@ -24,12 +24,16 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
       return;
     }
     const stored = window.localStorage.getItem("shopifyHost") || "";
-    if (stored && !hostFromQuery) {
-      setPersistedHost(stored);
-      const url = new URL(window.location.href);
-      url.searchParams.set("host", stored);
-      window.location.replace(url.toString());
-    }
+const looksSafe = /^[A-Za-z0-9+/=_-]+$/.test(stored) && stored.length > 10;
+
+if (looksSafe && stored && !hostFromQuery) {
+  setPersistedHost(stored);
+  const url = new URL(window.location.href);
+  url.searchParams.set("host", stored);
+  window.location.replace(url.toString());
+} else if (!looksSafe) {
+  window.localStorage.removeItem("shopifyHost");
+}
   }, [hostFromQuery]);
 
   const host = hostFromQuery || persistedHost;
