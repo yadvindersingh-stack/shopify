@@ -1,15 +1,46 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
-import { resolveShop } from '@/lib/shopify';
+import { NextRequest, NextResponse } from "next/server";
+import { supabase } from "@/lib/supabase";
+import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
-      // Temporary logging to debug missing shop context (remove after verification).
-  console.log('insights GET authorization', req.headers.get('authorization'));
-  console.log('insights GET cookie', req.headers.get('cookie'));
-  const shop = await resolveShop(req);
-  const { data: insights } = await supabase.from('insights').select('*').eq('shop_id', shop.id).order('created_at', { ascending: false });
-  return NextResponse.json(insights || []);
+    const shop = getShopFromRequestAuthHeader(req.headers.get("authorization"));
+
+    if (!shop) {
+      return NextResponse.json({ error: "Missing shop context" }, { status: 401 });
+    }
+
+    // Look up the shop row to get its uuid id
+    const { data: shopRow, error: shopErr } = await supabase
+      .from("shops")
+      .select("id")
+      .eq("shop_domain", shop)
+      .maybeSingle();
+
+    if (shopErr) {
+      return NextResponse.json({ error: "Failed to read shop", details: shopErr.message }, { status: 500 });
+    }
+
+    // If shop isn't installed yet, return empty list (not 500)
+    if (!shopRow?.id) {
+      return NextResponse.json([], { status: 200 });
+    }
+
+    const { data: insights, error: insErr } = await supabase
+      .from("insights")
+      .select("*")
+      .eq("shop_id", shopRow.id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (insErr) {
+      return NextResponse.json({ error: "Failed to list insights", details: insErr.message }, { status: 500 });
+    }
+
+    return NextResponse.json(insights || []);
   } catch (e: any) {
     return NextResponse.json(
       { error: "Failed to list insights", details: e?.message || String(e) },
@@ -17,5 +48,3 @@ export async function GET(req: NextRequest) {
     );
   }
 }
-
-
