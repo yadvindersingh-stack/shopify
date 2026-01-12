@@ -1,9 +1,9 @@
 export function buildPathWithHost(path: string, host?: string) {
   if (!host) return path;
-  const hasQuery = path.includes("?");
-  const separator = hasQuery ? "&" : "?";
-  return `${path}${separator}host=${encodeURIComponent(host)}`;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}host=${encodeURIComponent(host)}`;
 }
+
 
 export function getHostFromLocation(): string {
   if (typeof window === "undefined") return "";

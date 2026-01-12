@@ -56,8 +56,6 @@ async function exchangeCodeForToken(shop: string, code: string) {
 export async function GET(req: NextRequest) {
   try {
 
-    await fetch(`${APP_URL}/api/debug/callback-hit`, { method: "POST" });
-
     const shopParam = req.nextUrl.searchParams.get("shop");
     const code = req.nextUrl.searchParams.get("code");
     const hostParam = req.nextUrl.searchParams.get("host");

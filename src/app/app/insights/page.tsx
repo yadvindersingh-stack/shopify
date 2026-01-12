@@ -78,6 +78,9 @@ export default function InsightsPage() {
 
       // 2) Load insights list
       const res = await apiFetch("/api/insights", { cache: "no-store" });
+      const me = await apiFetch("/api/whoami");
+console.log("whoami", me.status, await me.text());
+
 
       if (res.status === 401) {
         router.replace(withHost("/app/error"));

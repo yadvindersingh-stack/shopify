@@ -20,7 +20,7 @@ function normalizeShop(shop?: string | null) {
 export async function POST(req: NextRequest) {
   try {
     // 1) Prefer Shopify session token
-    const shopFromToken = getShopFromRequestAuthHeader(req.headers.get("authorization"));
+    const shopFromToken = getShopFromRequestAuthHeader(req.headers.get("authorization"))?.toLowerCase();
 
     // 2) Fallback to query param (useful when UI fetch isn't using useApiFetch yet)
     const shopFromQuery = normalizeShop(req.nextUrl.searchParams.get("shop"));
