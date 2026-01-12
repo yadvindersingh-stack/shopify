@@ -26,9 +26,10 @@ function normalizeShopDomain(shop: string) {
 export async function GET(req: NextRequest) {
   const shopParam = req.nextUrl.searchParams.get("shop");
   const host = req.nextUrl.searchParams.get("host") || "";
+  const debug = req.nextUrl.searchParams.get("debug") === "1";
 
   if (!shopParam) {
-    return NextResponse.redirect(new URL("/app/error", APP_URL).toString());
+    return NextResponse.json({ ok: false, error: "Missing shop param" }, { status: 400 });
   }
 
   const shop = normalizeShopDomain(shopParam);
@@ -41,6 +42,20 @@ export async function GET(req: NextRequest) {
     `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
     `&state=${encodeURIComponent(state)}` +
     `&response_type=code`;
+
+  // 🔍 Debug mode: return the computed URL instead of redirecting
+  if (debug) {
+    return NextResponse.json({
+      ok: true,
+      shop,
+      redirect_uri: REDIRECT_URI,
+      authUrl,
+      env: {
+        SHOPIFY_APP_URL: APP_URL,
+        NEXT_PUBLIC_SHOPIFY_API_KEY_present: Boolean(API_KEY),
+      },
+    });
+  }
 
   return NextResponse.redirect(authUrl);
 }
