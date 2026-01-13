@@ -186,7 +186,8 @@ if (res.status === 403) {
         }
         throw new Error(`Insights API failed: ${res.status}`);
       }
-
+const scopes = await apiFetch("/api/debug/scopes/");
+console.log("scopes", scopes.status, await scopes.text());
       // Your run endpoint returns { insight }, not { insights }
       const count = json?.insight ? 1 : 0;
       setBanner({ message: `Scan complete — ${count} insight${count === 1 ? "" : "s"} found.` });
