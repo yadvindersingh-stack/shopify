@@ -9,7 +9,7 @@ export async function shopifyGraphql<T = any>({
   query: string;
   variables?: Record<string, any>;
 }): Promise<T> {
-  const url = `https://${shop}/admin/api/2025-01/graphql.json`;
+  const url = `https://${shop}/admin/api/2026-01/graphql.json`;
 
   const res = await fetch(url, {
     method: "POST",
