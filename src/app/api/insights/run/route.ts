@@ -51,15 +51,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
-    const ordersQuery = `created_at:>=${sinceIso}`;
+ const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+const ordersQuery = `created_at:>=${sinceIso}`;
 
-    const data = await shopifyGraphql({
-      shop,
-      accessToken: shopRow.access_token,
-      query: INSIGHT_CONTEXT_QUERY,
-      variables: { ordersQuery },
-    });
+const data = await shopifyGraphql({
+  shop,
+  accessToken: shopRow.access_token,
+  query: INSIGHT_CONTEXT_QUERY,
+  variables: { ordersQuery },
+});
+
 
     const ctx = buildInsightContext(shop, new Date(), data);
     const insight = await evaluateSalesRhythmDrift(ctx);

@@ -1,14 +1,14 @@
 export const INSIGHT_CONTEXT_QUERY = `
-query InsightContext($since: DateTime!) {
+query InsightContext($ordersQuery: String!) {
   shop {
     ianaTimezone
   }
 
   orders(
     first: 250
-    query: $since
+    query: $ordersQuery
     sortKey: CREATED_AT
-    reverse: false
+    reverse: true
   ) {
     edges {
       node {
@@ -16,21 +16,15 @@ query InsightContext($since: DateTime!) {
         createdAt
         cancelledAt
         totalPriceSet {
-          shopMoney {
-            amount
-          }
+          shopMoney { amount }
         }
         lineItems(first: 50) {
           edges {
             node {
-              product {
-                id
-              }
+              product { id }
               quantity
               originalTotalSet {
-                shopMoney {
-                  amount
-                }
+                shopMoney { amount }
               }
             }
           }
@@ -46,9 +40,7 @@ query InsightContext($since: DateTime!) {
         title
         totalInventory
         priceRangeV2 {
-          minVariantPrice {
-            amount
-          }
+          minVariantPrice { amount }
         }
       }
     }
