@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
+import { shopifyGraphql } from "@/lib/shopify-admin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,20 +16,14 @@ export async function GET(req: NextRequest) {
     .eq("shop_domain", shop)
     .maybeSingle();
 
-  if (!row?.access_token) {
-    return NextResponse.json({ error: "Missing access token in DB", shop }, { status: 403 });
-  }
+  if (!row?.access_token) return NextResponse.json({ error: "Missing token" }, { status: 403 });
 
-  const res = await fetch(`https://${shop}/admin/oauth/access_scopes.json`, {
-    headers: {
-      "X-Shopify-Access-Token": row.access_token,
-      "Content-Type": "application/json",
-    },
+  // Minimal Admin API query that always works if you're hitting Admin GraphQL correctly
+  const data = await shopifyGraphql({
+    shop,
+    accessToken: row.access_token,
+    query: `query { shop { name myshopifyDomain } }`,
   });
 
-  const text = await res.text();
-  return NextResponse.json(
-    { shop, status: res.status, body: text },
-    { status: 200 }
-  );
+  return NextResponse.json({ ok: true, data });
 }

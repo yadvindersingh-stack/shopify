@@ -1,15 +1,19 @@
-export async function shopifyGraphql<T = any>({
-  shop,
-  accessToken,
-  query,
-  variables,
-}: {
-  shop: string; // storepulse-2.myshopify.com
+export async function shopifyGraphql(args: {
+  shop: string;
   accessToken: string;
   query: string;
   variables?: Record<string, any>;
-}): Promise<T> {
-  const url = `https://${shop}/admin/api/2026-01/graphql.json`;
+}) {
+  const { shop, accessToken, query, variables } = args;
+
+  const version = process.env.SHOPIFY_API_VERSION || "2024-10";
+  const shopDomain = shop
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "");
+
+  const url = `https://${shopDomain}/admin/api/${version}/graphql.json`;
 
   const res = await fetch(url, {
     method: "POST",
@@ -17,18 +21,25 @@ export async function shopifyGraphql<T = any>({
       "Content-Type": "application/json",
       "X-Shopify-Access-Token": accessToken,
     },
-    body: JSON.stringify({ query, variables }),
+    body: JSON.stringify({ query, variables: variables ?? {} }),
   });
 
-  const json = await res.json();
-
-  if (!res.ok) {
-    throw new Error(`Shopify GraphQL HTTP ${res.status}: ${JSON.stringify(json)}`);
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // leave as null
   }
 
-  if (json.errors?.length) {
+  if (!res.ok) {
+    throw new Error(`Shopify GraphQL HTTP ${res.status}: ${text?.slice(0, 300)}`);
+  }
+
+  if (json?.errors?.length) {
     throw new Error(`Shopify GraphQL errors: ${JSON.stringify(json.errors)}`);
   }
 
-  return json.data as T;
+  // Some errors can be inside data + userErrors, but your current exception is top-level errors.
+  return json?.data;
 }
