@@ -113,6 +113,8 @@ export default function InsightsPage() {
       const res = await apiFetch("/api/insights", { cache: "no-store" });
       const me = await apiFetch("/api/whoami");
 console.log("whoami", me.status, await me.text());
+const scopes = await apiFetch("/api/debug/scopes/");
+console.log("scopes", scopes.status, await scopes.text());
 
 if (res.status === 403) {
   await reconnect();
