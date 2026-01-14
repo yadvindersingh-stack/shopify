@@ -51,8 +51,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
- const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
 const ordersQuery = `created_at:>=${sinceIso}`;
+console.log("INSIGHT_CONTEXT ordersQuery", ordersQuery);
 
 const data = await shopifyGraphql({
   shop,
@@ -60,6 +61,7 @@ const data = await shopifyGraphql({
   query: INSIGHT_CONTEXT_QUERY,
   variables: { ordersQuery },
 });
+
 
 
     const ctx = buildInsightContext(shop, new Date(), data);
