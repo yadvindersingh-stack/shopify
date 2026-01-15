@@ -36,10 +36,17 @@ export async function shopifyGraphql(args: {
     throw new Error(`Shopify GraphQL HTTP ${res.status}: ${text?.slice(0, 300)}`);
   }
 
- if (json?.errors?.length) {
+if (json?.errors?.length) {
   // include a short snippet of the full response for debugging
+  const responseSnippet = text.slice(0, 800);
+  console.error(
+    "Shopify GraphQL errors:",
+    JSON.stringify(json.errors),
+    "| response:",
+    responseSnippet
+  );
   throw new Error(
-    `Shopify GraphQL errors: ${JSON.stringify(json.errors)} | response: ${text.slice(0, 800)}`
+    `Shopify GraphQL errors: ${JSON.stringify(json.errors)} | response: ${responseSnippet}`
   );
 }
 
