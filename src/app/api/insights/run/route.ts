@@ -54,6 +54,8 @@ export async function POST(req: NextRequest) {
 const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
 const ordersQuery = `created_at:>=${sinceIso}`;
 console.log("INSIGHT_CONTEXT ordersQuery", ordersQuery);
+console.log("SHOPIFY_API_VERSION", process.env.SHOPIFY_API_VERSION);
+
 
 const data = await shopifyGraphql({
   shop,

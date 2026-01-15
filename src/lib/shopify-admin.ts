@@ -36,9 +36,12 @@ export async function shopifyGraphql(args: {
     throw new Error(`Shopify GraphQL HTTP ${res.status}: ${text?.slice(0, 300)}`);
   }
 
-  if (json?.errors?.length) {
-    throw new Error(`Shopify GraphQL errors: ${JSON.stringify(json.errors)}`);
-  }
+ if (json?.errors?.length) {
+  // include a short snippet of the full response for debugging
+  throw new Error(
+    `Shopify GraphQL errors: ${JSON.stringify(json.errors)} | response: ${text.slice(0, 800)}`
+  );
+}
 
   // Some errors can be inside data + userErrors, but your current exception is top-level errors.
   return json?.data;
