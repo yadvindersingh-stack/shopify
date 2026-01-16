@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { ensureOrderWebhooks } from "@/lib/shopify-webhooks";
+
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -80,6 +82,14 @@ export async function GET(req: NextRequest) {
       },
       { onConflict: "shop_domain" }
     );
+
+const appUrl = process.env.SHOPIFY_APP_URL!;
+try {
+  await ensureOrderWebhooks({ shop, accessToken: accessToken, appUrl });
+} catch (e) {
+  console.log("webhook registration failed", e);
+}
+
 
     if (error) {
       return NextResponse.json({ error: "Failed to persist shop token", details: error.message }, { status: 500 });
