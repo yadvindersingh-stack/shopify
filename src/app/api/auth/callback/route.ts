@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { ensureOrderWebhooks } from "@/lib/shopify-webhooks";
-
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -82,14 +80,6 @@ export async function GET(req: NextRequest) {
       },
       { onConflict: "shop_domain" }
     );
-
-const appUrl = process.env.SHOPIFY_APP_URL!;
-try {
-  await ensureOrderWebhooks({ shop, accessToken: accessToken, appUrl });
-  console.log("Shopify order webhooks ensured for shop", shop);
-} catch (e) {
-  console.log("webhook registration failed", e);
-}
 
 
     if (error) {
