@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import crypto from "crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -7,6 +8,55 @@ export const dynamic = "force-dynamic";
 const APP_URL = (process.env.SHOPIFY_APP_URL || "").replace(/\/+$/, "");
 const API_KEY = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY!;
 const API_SECRET = process.env.SHOPIFY_API_SECRET!;
+
+function safeShop(shop: string) {
+  return shop.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+function verifyHmac(url: URL) {
+  const hmac = url.searchParams.get("hmac");
+  if (!hmac) return false;
+
+  // Shopify HMAC uses query params (excluding hmac, signature)
+  const params = Array.from(url.searchParams.entries())
+    .filter(([k]) => k !== "hmac" && k !== "signature")
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
+
+  const digest = crypto.createHmac("sha256", API_SECRET).update(params).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac));
+  } catch {
+    return false;
+  }
+}
+
+async function exchangeCodeForToken(shop: string, code: string) {
+  const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: API_KEY,
+      client_secret: API_SECRET,
+      code,
+    }),
+  });
+
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Token exchange failed ${res.status}: ${text.slice(0, 300)}`);
+
+  const json = JSON.parse(text);
+  const token = json?.access_token;
+  if (!token) throw new Error(`Token exchange missing access_token: ${text.slice(0, 300)}`);
+
+  return token as string;
+}
+
+function buildHost(shop: string, existingHost?: string | null) {
+  if (existingHost) return existingHost;
+  return Buffer.from(`${shop}/admin`).toString("base64");
+}
 
 function parseState(state?: string | null): { host?: string } {
   if (!state) return {};
@@ -18,78 +68,50 @@ function parseState(state?: string | null): { host?: string } {
   }
 }
 
-function normalizeShop(shop: string) {
-  return String(shop || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/.*$/, "");
-}
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
 
-async function exchangeCodeForToken(shop: string, code: string) {
-  const url = `https://${shop}/admin/oauth/access_token`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: API_KEY,
-      client_secret: API_SECRET,
-      code,
-    }),
+  const shopRaw = url.searchParams.get("shop");
+  const code = url.searchParams.get("code");
+  const hostParam = url.searchParams.get("host");
+  const state = url.searchParams.get("state");
+
+  if (!APP_URL) {
+    return NextResponse.json({ ok: false, error: "Missing SHOPIFY_APP_URL" }, { status: 500 });
+  }
+  if (!shopRaw || !code) {
+    return NextResponse.redirect(new URL("/app/error", APP_URL).toString());
+  }
+
+  const shop = safeShop(shopRaw);
+
+  // Optional but recommended for public apps
+  if (!verifyHmac(url)) {
+    return NextResponse.json({ ok: false, error: "Invalid HMAC" }, { status: 401 });
+  }
+
+  const stateHost = parseState(state).host;
+  const host = buildHost(shop, hostParam || stateHost);
+
+  // Exchange
+  const access_token = await exchangeCodeForToken(shop, code);
+
+  // Persist shop row (NOTE: ensure these columns exist and allow values)
+  const { error } = await supabase.from("shops").upsert({
+    shop_domain: shop,
+    access_token,
+    email: "unknown@example.com",
+    timezone: "UTC",
   });
 
-  const text = await res.text();
-  let json: any = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {}
-
-  if (!res.ok) {
-    throw new Error(`Token exchange failed: ${res.status} ${text?.slice(0, 200)}`);
-  }
-
-  const token = json?.access_token;
-  if (!token) throw new Error("Token exchange returned no access_token");
-  return token as string;
-}
-
-export async function GET(req: NextRequest) {
-  try {
-
-    const shopParam = req.nextUrl.searchParams.get("shop");
-    const code = req.nextUrl.searchParams.get("code");
-    const hostParam = req.nextUrl.searchParams.get("host");
-    const state = req.nextUrl.searchParams.get("state");
-
-    if (!shopParam || !code) {
-      return NextResponse.redirect(new URL("/app/error", APP_URL).toString());
-    }
-
-    const shop = normalizeShop(shopParam);
-    const host = hostParam || parseState(state).host || "";
-
-    const accessToken = await exchangeCodeForToken(shop, code);
-
-    const { error } = await supabase.from("shops").upsert(
-      {
-        shop_domain: shop,
-        access_token: accessToken,
-        // keep these optional in schema if you can; otherwise set defaults
-        email: "unknown@example.com",
-        timezone: "UTC",
-      },
-      { onConflict: "shop_domain" }
+  if (error) {
+    return NextResponse.json(
+      { ok: false, error: "Failed to persist shop", details: error.message },
+      { status: 500 }
     );
-
-
-    if (error) {
-      return NextResponse.json({ error: "Failed to persist shop token", details: error.message }, { status: 500 });
-    }
-
-    // After install, go to insights (setup later)
-    const target = new URL(`/app/insights?host=${encodeURIComponent(host)}`, APP_URL).toString();
-    return NextResponse.redirect(target);
-  } catch (e: any) {
-    return NextResponse.json({ error: "OAuth callback failed", details: e?.message || String(e) }, { status: 500 });
   }
+
+  // Redirect back into embedded app with host
+  const target = new URL(`/app?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`, APP_URL).toString();
+  return NextResponse.redirect(target);
 }
