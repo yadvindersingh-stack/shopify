@@ -86,6 +86,7 @@ export async function GET(req: NextRequest) {
 const appUrl = process.env.SHOPIFY_APP_URL!;
 try {
   await ensureOrderWebhooks({ shop, accessToken: accessToken, appUrl });
+  console.log("Shopify order webhooks ensured for shop", shop);
 } catch (e) {
   console.log("webhook registration failed", e);
 }
