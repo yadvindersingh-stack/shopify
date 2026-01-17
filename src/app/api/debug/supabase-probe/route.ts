@@ -5,43 +5,30 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  // Write a known row
-  const markerShop = `probe-${Date.now()}.myshopify.com`;
+  const marker = `probe-${Date.now()}.myshopify.com`;
 
-  const { data: upserted, error: upsertError } = await supabase
+  const { error: upsertErr } = await supabase.from("shops").upsert({
+    shop_domain: marker,
+    access_token: "marker",
+    email: "marker@example.com",
+    timezone: "UTC",
+  });
+
+  const { data, error: readErr } = await supabase
     .from("shops")
-    .upsert(
-      {
-        shop_domain: markerShop,
-        access_token: "probe",
-        email: "probe@example.com",
-        timezone: "UTC",
-      },
-      { onConflict: "shop_domain" }
-    )
-    .select("shop_domain")
-    .single();
+    .select("shop_domain, created_at")
+    .eq("shop_domain", marker)
+    .maybeSingle();
 
-  if (upsertError) {
-    return NextResponse.json(
-      { ok: false, step: "upsert", error: upsertError.message },
-      { status: 500 }
-    );
-  }
-
-  // Read back
-  const { data: rows, error: readError } = await supabase
-    .from("shops")
-    .select("shop_domain")
-    .order("created_at", { ascending: false })
-    .limit(5);
-
-  if (readError) {
-    return NextResponse.json(
-      { ok: false, step: "read", error: readError.message },
-      { status: 500 }
-    );
-  }
-
-  return NextResponse.json({ ok: true, inserted: upserted, recent: rows });
+  return NextResponse.json({
+    ok: !upsertErr && !readErr && !!data,
+    marker,
+    upsertErr: upsertErr?.message || null,
+    readErr: readErr?.message || null,
+    env: {
+      SUPABASE_URL_present: Boolean(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL),
+      SERVICE_ROLE_present: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+    },
+    found: data || null,
+  });
 }
