@@ -27,7 +27,6 @@ type Insight = {
   data_snapshot: Record<string, any>;
   created_at?: string;
 };
-  const apiFetch = useApiFetch();
 
 export default function InsightsPage() {
   const [insights, setInsights] = useState<Insight[]>([]);
@@ -38,6 +37,7 @@ export default function InsightsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
+  const apiFetch = useApiFetch();
 
   const withHost = useCallback(
     (path: string) => buildPathWithHost(path, hostParam),
