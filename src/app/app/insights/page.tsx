@@ -229,7 +229,7 @@ console.log("scopes", scopes.status, await scopes.text());
                 <EmptyState
                   heading="Nothing critical today"
                   image="https://cdn.shopify.com/static/images/admin/emptystate.svg"
-                  action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
+                  //action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
                   secondaryAction={{
                     content: "Settings",
                     onAction: () => router.push(withHost("/app/settings")),

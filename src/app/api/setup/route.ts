@@ -11,6 +11,8 @@ export async function POST(req: NextRequest) {
     daily_enabled,
     weekly_enabled,
   });
+  console.log("SETUP", { shopId: shop.id, error: error?.message });
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });
 }
@@ -18,11 +20,13 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const shop = await resolveShop(req);
   const { data, error } = await supabase
-    .from('digest_settings')
-    .select('email, daily_enabled, weekly_enabled')
-    .eq('shop_id', shop.id)
-    .single();
-    
+    .from("digest_settings")
+    .select("email, daily_enabled, weekly_enabled")
+    .eq("shop_id", shop.id)
+    .maybeSingle(); // ✅ instead of single()
+console.log("SETUP", { shopId: shop.id, error: error?.message });
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data || {});
 }
+
