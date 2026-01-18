@@ -43,6 +43,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(insights || []);
   } catch (e: any) {
+        if (e instanceof Response) return e; // ✅ critical
     return NextResponse.json(
       { error: "Failed to list insights", details: e?.message || String(e) },
       { status: 500 }
