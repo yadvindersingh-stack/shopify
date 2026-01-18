@@ -152,27 +152,51 @@ if (res.status === 403) {
     }
   }, [router, searchParams, withHost]);
 
-  const runScan = async () => {
-  setScanLoading(true);
-  try {
-    const res = await apiFetch("/api/insights/run", { method: "POST" });
+  const runScan = useCallback(async () => {
+    setScanLoading(true);
+    try {
+      // ✅ IMPORTANT: use the apiFetch hook instance from top-level (includes Authorization)
+      const res = await apiFetch("/api/insights/run", { method: "POST" });
+      if (res.status === 403) {
+  await reconnect();
+  return;
+}
 
-    const text = await res.text();
-    const json = text ? JSON.parse(text) : null;
+      // If shop context missing, route to error (not setup)
+      if (res.status === 401) {
+        router.replace(withHost("/app/error"));
+        return;
+      }
 
-    if (!res.ok) {
-      console.error("Insights run failed:", res.status, text?.slice(0, 500));
-      throw new Error(`Insights API failed: ${res.status}`);
+      const text = await res.text();
+      let json: any = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        // ignore
+      }
+
+      if (!res.ok) {
+        console.error("Insights run failed:", res.status, text?.slice(0, 500));
+        // If shop not installed/token missing, take user to setup/connect flow
+        if (res.status === 403) {
+          router.replace(withHost("/app/setup"));
+          await reconnect();
+          return;
+        }
+        throw new Error(`Insights API failed: ${res.status}`);
+      }
+const scopes = await apiFetch("/api/debug/scopes/");
+console.log("scopes", scopes.status, await scopes.text());
+      // Your run endpoint returns { insight }, not { insights }
+      const count = json?.insight ? 1 : 0;
+      setBanner({ message: `Scan complete — ${count} insight${count === 1 ? "" : "s"} found.` });
+
+      await fetchInsights();
+    } finally {
+      setScanLoading(false);
     }
-
-    const count = Array.isArray(json?.insights) ? json.insights.length : 0;
-    setBanner({ message: `Scan complete — ${count} insight${count === 1 ? "" : "s"} found.` });
-    await fetchInsights();
-  } finally {
-    setScanLoading(false);
-  }
-};
-
+  }, [apiFetch, router, withHost, fetchInsights]);
 
   const shouldShowEmpty = useMemo(() => {
     if (!insights.length) return true;
