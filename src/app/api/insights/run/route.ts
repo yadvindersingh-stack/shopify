@@ -4,65 +4,73 @@ import { shopifyGraphql } from "@/lib/shopify-admin";
 import { INSIGHT_CONTEXT_QUERY } from "@/lib/queries/insight-context";
 import { buildInsightContext } from "@/core/insights/build-context";
 import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
-import { resolveShop } from "@/lib/shopify";
+import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function POST(req: NextRequest) {
-  try {
-    // ✅ canonical: resolves shop + token from your existing architecture
-    const shopRecord = await resolveShop(req);
-
-    // ✅ Shopify search query should be date-only (prevents parsing bugs)
-    const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
-    const ymd = since.toISOString().slice(0, 10);
-    const ordersQuery = `created_at:>=${ymd}`;
-
-    const data = await shopifyGraphql({
-      shop: shopRecord.shop_domain,
-      accessToken: shopRecord.access_token,
-      query: INSIGHT_CONTEXT_QUERY,
-      variables: { ordersQuery },
-    });
-
-    const ctx = buildInsightContext(shopRecord.shop_domain, new Date(), data);
-   const drift = await evaluateSalesRhythmDrift(ctx);
-
-if (!drift) {
-  return NextResponse.json({ insights: [] });
+function normalizeShop(shop?: string | null) {
+  return (shop || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "");
 }
 
-const suggested = (drift.indicators || [])
-  .slice(0, 2)
-  .map((i: any) => i.suggested_action || i.action || i.title || i.key)
-  .filter(Boolean)
-  .join("\n");
+export async function POST(req: NextRequest) {
+  try {
+    // 1) Prefer Shopify session token
+    const shopFromToken = getShopFromRequestAuthHeader(req.headers.get("authorization"))?.toLowerCase();
 
-const row = {
-  shop_id: shopRecord.id,
-  type: drift.key,
-  title: drift.title,
-  description: drift.summary,
-  severity: drift.severity || "medium",
-  suggested_action: suggested || "",
-  data_snapshot: {
-    indicators: drift.indicators,
-    metrics: drift.metrics,
-    evaluated_at: drift.evaluated_at,
-  },
-};
+    // 2) Fallback to query param (useful when UI fetch isn't using useApiFetch yet)
+    const shopFromQuery = normalizeShop(req.nextUrl.searchParams.get("shop"));
 
-const { error } = await supabase.from("insights").insert(row);
-if (error) throw new Error(`Failed to persist insight: ${error.message}`);
+    const shop = shopFromToken || (shopFromQuery || null);
 
-return NextResponse.json({ insights: [row] });
-
+    if (!shop) {
+      return NextResponse.json(
+        { error: "Missing shop context", hint: "No valid Shopify session token (Authorization) and no shop query param." },
+        { status: 401 }
+      );
     }
 
-  catch (e: any) {
-    // resolveShop throws a Response on 401; return it cleanly
-    if (e instanceof Response) return e;
+    const { data: shopRow, error: shopErr } = await supabase
+      .from("shops")
+      .select("access_token")
+      .eq("shop_domain", shop)
+      .maybeSingle();
+
+    if (shopErr) {
+      return NextResponse.json({ error: "Failed to read shop token", details: shopErr.message }, { status: 500 });
+    }
+
+    if (!shopRow?.access_token) {
+      return NextResponse.json(
+        { error: "Shop not installed or missing access token", shop },
+        { status: 403 }
+      );
+    }
+
+const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+const ordersQuery = `created_at:>=${sinceIso}`;
+console.log("INSIGHT_CONTEXT ordersQuery", ordersQuery);
+console.log("SHOPIFY_API_VERSION", process.env.SHOPIFY_API_VERSION);
+
+
+const data = await shopifyGraphql({
+  shop,
+  accessToken: shopRow.access_token,
+  query: INSIGHT_CONTEXT_QUERY,
+  variables: { ordersQuery },
+});
+
+
+
+    const ctx = buildInsightContext(shop, new Date(), data);
+    const insight = await evaluateSalesRhythmDrift(ctx);
+
+    return NextResponse.json({ insight });
+  } catch (e: any) {
     return NextResponse.json(
       { error: "Failed to run insights", details: e?.message || String(e) },
       { status: 500 }
