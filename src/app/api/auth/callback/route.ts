@@ -33,25 +33,39 @@ function verifyHmac(url: URL) {
 }
 
 async function exchangeCodeForToken(shop: string, code: string) {
-  const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
+  const url = `https://${shop}/admin/oauth/access_token`;
+
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      client_id: API_KEY,
-      client_secret: API_SECRET,
+      client_id: process.env.NEXT_PUBLIC_SHOPIFY_API_KEY,
+      client_secret: process.env.SHOPIFY_API_SECRET,
       code,
     }),
   });
 
   const text = await res.text();
-  if (!res.ok) throw new Error(`Token exchange failed ${res.status}: ${text.slice(0, 300)}`);
+
+  // 🔥 log what Shopify actually said
+  console.log("TOKEN_EXCHANGE", {
+    url,
+    status: res.status,
+    body: text.slice(0, 500),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Token exchange failed ${res.status}: ${text}`);
+  }
 
   const json = JSON.parse(text);
-  const token = json?.access_token;
-  if (!token) throw new Error(`Token exchange missing access_token: ${text.slice(0, 300)}`);
+  if (!json?.access_token) {
+    throw new Error(`Token exchange missing access_token: ${text}`);
+  }
 
-  return token as string;
+  return json.access_token as string;
 }
+
 
 function buildHost(shop: string, existingHost?: string | null) {
   if (existingHost) return existingHost;
