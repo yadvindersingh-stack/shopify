@@ -4,11 +4,11 @@ import { supabase } from "@/lib/supabase";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const APP_URL = (process.env.SHOPIFY_APP_URL || "").replace(/\/+$/, "");
+const APP_URL = (process.env.SHOPIFY_APP_URL || "").replace(/\/$/, "");
 const API_KEY = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY!;
 const API_SECRET = process.env.SHOPIFY_API_SECRET!;
 
-function parseState(state?: string | null): { host?: string } {
+function decodeState(state?: string | null): { host?: string } {
   if (!state) return {};
   try {
     const json = Buffer.from(state, "base64url").toString("utf8");
@@ -16,14 +16,6 @@ function parseState(state?: string | null): { host?: string } {
   } catch {
     return {};
   }
-}
-
-function normalizeShop(shop: string) {
-  return String(shop || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/.*$/, "");
 }
 
 async function exchangeCodeForToken(shop: string, code: string) {
@@ -40,57 +32,64 @@ async function exchangeCodeForToken(shop: string, code: string) {
 
   const text = await res.text();
   let json: any = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {}
+  try { json = text ? JSON.parse(text) : null; } catch {}
 
   if (!res.ok) {
-    throw new Error(`Token exchange failed: ${res.status} ${text?.slice(0, 200)}`);
+    throw new Error(`Token exchange failed ${res.status}: ${text?.slice(0, 300)}`);
   }
-
-  const token = json?.access_token;
-  if (!token) throw new Error("Token exchange returned no access_token");
-  return token as string;
+  if (!json?.access_token) {
+    throw new Error(`Token exchange missing access_token: ${text?.slice(0, 300)}`);
+  }
+  return json.access_token as string;
 }
 
 export async function GET(req: NextRequest) {
+  const shop = (req.nextUrl.searchParams.get("shop") || "").trim().toLowerCase();
+  const code = (req.nextUrl.searchParams.get("code") || "").trim();
+  const hostParam = (req.nextUrl.searchParams.get("host") || "").trim();
+  const state = req.nextUrl.searchParams.get("state");
+
+  const stateHost = decodeState(state).host || "";
+  const host = hostParam || stateHost;
+
+  console.log("AUTH_CALLBACK_HIT", {
+    shop,
+    hasCode: Boolean(code),
+    hostPresent: Boolean(host),
+    APP_URL_present: Boolean(APP_URL),
+  });
+
+  if (!APP_URL) {
+    return NextResponse.json({ ok: false, error: "Missing SHOPIFY_APP_URL" }, { status: 500 });
+  }
+  if (!shop || !code) {
+    return NextResponse.json({ ok: false, error: "Missing shop or code", shop, hasCode: Boolean(code) }, { status: 400 });
+  }
+  if (!shop.endsWith(".myshopify.com")) {
+    return NextResponse.json({ ok: false, error: "Invalid shop", shop }, { status: 400 });
+  }
+
   try {
+    const access_token = await exchangeCodeForToken(shop, code);
 
-    const shopParam = req.nextUrl.searchParams.get("shop");
-    const code = req.nextUrl.searchParams.get("code");
-    const hostParam = req.nextUrl.searchParams.get("host");
-    const state = req.nextUrl.searchParams.get("state");
-
-    if (!shopParam || !code) {
-      return NextResponse.redirect(new URL("/app/error", APP_URL).toString());
-    }
-
-    const shop = normalizeShop(shopParam);
-    const host = hostParam || parseState(state).host || "";
-
-    const accessToken = await exchangeCodeForToken(shop, code);
-
-    const { error } = await supabase.from("shops").upsert(
-      {
+    const { error } = await supabase
+      .from("shops")
+      .upsert({
         shop_domain: shop,
-        access_token: accessToken,
-        // keep these optional in schema if you can; otherwise set defaults
+        access_token,
         email: "unknown@example.com",
         timezone: "UTC",
-      },
-      { onConflict: "shop_domain" }
-    );
-
+      });
 
     if (error) {
-      return NextResponse.json({ error: "Failed to persist shop token", details: error.message }, { status: 500 });
+      console.log("SHOP_UPSERT_FAILED", { message: error.message });
+      return NextResponse.json({ ok: false, error: "Failed to persist shop", details: error.message }, { status: 500 });
     }
-console.log("AUTH_CALLBACK", { shop, hasCode: Boolean(code) });
 
-    // After install, go to insights (setup later)
-    const target = new URL(`/app/insights?host=${encodeURIComponent(host)}`, APP_URL).toString();
-    return NextResponse.redirect(target);
+    const target = `${APP_URL}/app?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+    return NextResponse.redirect(target, 302);
   } catch (e: any) {
-    return NextResponse.json({ error: "OAuth callback failed", details: e?.message || String(e) }, { status: 500 });
+    console.log("AUTH_CALLBACK_FAILED", { message: e?.message || String(e) });
+    return NextResponse.json({ ok: false, error: "Callback failed", details: e?.message || String(e) }, { status: 500 });
   }
 }
