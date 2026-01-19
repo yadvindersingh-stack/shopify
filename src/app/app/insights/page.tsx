@@ -16,6 +16,27 @@ import {
 import InsightCard from "@/components/InsightCard";
 import { buildPathWithHost } from "@/lib/host";
 import { useApiFetch } from "@/hooks/useApiFetch";
+import { Redirect } from "@shopify/app-bridge/actions";
+import { useAppBridge } from "@/lib/app-bridge-context";
+
+function useShopifyRedirect() {
+  const app = useAppBridge();
+
+  return (to: string) => {
+    // must be absolute for REMOTE
+    const absolute = to.startsWith("http") ? to : `${window.location.origin}${to}`;
+
+    if (app) {
+      const redirect = Redirect.create(app);
+      redirect.dispatch(Redirect.Action.REMOTE, absolute);
+      return;
+    }
+
+    // fallback (non-embedded)
+    window.location.assign(absolute);
+  };
+}
+
 
 type InsightRow = {
   id: string;
@@ -58,76 +79,27 @@ export default function InsightsPage() {
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
   }, [insights]);
 
-  const fetchInsights = useCallback(async () => {
-    setLoading(true);
-    try {
-      // Ensure setup exists; if not configured, send user to setup
-      const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
-      if (setupRes.status === 401) {
-        router.replace(withHost("/app/error"));
-        return;
-      }
-      if (setupRes.status === 403) {
-  const who = await apiFetch("/api/whoami", { cache: "no-store" });
-  const whoJson = await who.json().catch(() => ({}));
-  const shop = whoJson?.shop;
-  if (shop) {
-    window.top?.location.assign(
-      `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(hostParam)}`
-    );
-    return;
-  }
-}
+const redirectRemote = useShopifyRedirect();
 
-      if (setupRes.ok) {
-        const setup = await setupRes.json().catch(() => ({}));
-        if (!setup?.email) {
-          router.replace(withHost("/app/setup"));
-          return;
-        }
-      }
-
-      const res = await apiFetch("/api/insights", { cache: "no-store" });
-      if (res.status === 401) {
-        router.replace(withHost("/app/error"));
-        return;
-      }
-      const data = await res.json().catch(() => []);
-      setInsights(Array.isArray(data) ? data.slice(0, 5) : []);
-    } finally {
-      setLoading(false);
-    }
-  }, [apiFetch, router, withHost]);
-
-  useEffect(() => {
-    fetchInsights();
-  }, [fetchInsights]);
-
-  const runScan = useCallback(async () => {
-  setScanLoading(true);
+const fetchInsights = useCallback(async () => {
+  setLoading(true);
   try {
-    const res = await apiFetch("/api/insights/run", { method: "POST" });
+    const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
 
-    // If embedded context missing entirely
-    if (res.status === 401) {
+    if (setupRes.status === 401) {
       router.replace(withHost("/app/error"));
       return;
     }
 
-    // If we can decode shop from bearer but shop isn't installed/stored yet
-    if (res.status === 403) {
-      // call whoami to get the shop domain reliably
+    if (setupRes.status === 403) {
       const who = await apiFetch("/api/whoami", { cache: "no-store" });
       const whoJson = await who.json().catch(() => ({}));
       const shop = whoJson?.shop;
 
       if (shop) {
-        const url = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(
-          hostParam
-        )}`;
-
-        // IMPORTANT: embedded apps must redirect the top frame
-        window.top?.location.assign(url);
+        redirectRemote(
+          `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(hostParam)}`
+        );
         return;
       }
 
@@ -135,13 +107,61 @@ export default function InsightsPage() {
       return;
     }
 
+    if (setupRes.ok) {
+      const setup = await setupRes.json().catch(() => ({}));
+      if (!setup?.email) {
+        router.replace(withHost("/app/setup"));
+        return;
+      }
+    }
+
+    const res = await apiFetch("/api/insights", { cache: "no-store" });
+    if (res.status === 401) {
+      router.replace(withHost("/app/error"));
+      return;
+    }
+    const data = await res.json().catch(() => []);
+    setInsights(Array.isArray(data) ? data.slice(0, 5) : []);
+  } finally {
+    setLoading(false);
+  }
+}, [apiFetch, router, withHost, hostParam, redirectRemote]);
+
+
+  useEffect(() => {
+    fetchInsights();
+  }, [fetchInsights]);
+//const redirectRemote = useShopifyRedirect();
+
+const runScan = useCallback(async () => {
+  setScanLoading(true);
+  try {
+    const res = await apiFetch("/api/insights/run", { method: "POST" });
+
+    if (res.status === 401) {
+      router.replace(withHost("/app/error"));
+      return;
+    }
+
+    if (res.status === 403) {
+      const who = await apiFetch("/api/whoami", { cache: "no-store" });
+      const whoJson = await who.json().catch(() => ({}));
+      const shop = whoJson?.shop;
+
+      if (shop) {
+        redirectRemote(
+          `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(hostParam)}`
+        );
+        return;
+      }
+
+      setBanner("Missing shop context. Please relaunch from Shopify Admin.");
+      return;
+    }
+
     const text = await res.text();
     let json: any = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      json = null;
-    }
+    try { json = text ? JSON.parse(text) : null; } catch {}
 
     if (!res.ok) {
       console.error("Insights run failed:", res.status, text?.slice(0, 500));
@@ -155,7 +175,8 @@ export default function InsightsPage() {
   } finally {
     setScanLoading(false);
   }
-}, [apiFetch, router, withHost, hostParam, fetchInsights]);
+}, [apiFetch, router, withHost, hostParam, redirectRemote, fetchInsights]);
+
 
 
   const shouldShowEmpty = useMemo(() => {
