@@ -132,11 +132,19 @@ if (!setup?.email) {
     fetchInsights();
   }, [fetchInsights]);
 
-  useEffect(() => {
-  if (didInit.current) return;
-  didInit.current = true;
-  fetchInsights();
-}, [fetchInsights]);
+useEffect(() => {
+  let cancelled = false;
+
+  (async () => {
+    if (cancelled) return;
+    await fetchInsights();
+  })();
+
+  return () => {
+    cancelled = true;
+  };
+}, []); // <-- empty deps
+
 
 //const redirectRemote = useShopifyRedirect();
 
