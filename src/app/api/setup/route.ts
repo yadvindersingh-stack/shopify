@@ -1,32 +1,58 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
-import { resolveShop } from '@/lib/shopify';
+import { NextRequest, NextResponse } from "next/server";
+import { supabase } from "@/lib/supabase";
+import { resolveShop, HttpError } from "@/lib/shopify";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  const shop = await resolveShop(req);
-  const { email, daily_enabled, weekly_enabled } = await req.json();
-  const { error } = await supabase.from('digest_settings').upsert({
-    shop_id: shop.id,
-    email,
-    daily_enabled,
-    weekly_enabled,
-  });
-  console.log("SETUP", { shopId: shop.id, error: error?.message });
+  try {
+    const shop = await resolveShop(req);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ success: true });
+    const body = await req.json().catch(() => ({}));
+    const email = typeof body.email === "string" ? body.email : null;
+    const daily_enabled = Boolean(body.daily_enabled);
+    const weekly_enabled = Boolean(body.weekly_enabled);
+
+    const { error } = await supabase.from("digest_settings").upsert({
+      shop_id: shop.id,
+      email,
+      daily_enabled,
+      weekly_enabled,
+    });
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true });
+  } catch (e: any) {
+    if (e instanceof HttpError) {
+      return NextResponse.json({ error: e.message }, { status: e.status });
+    }
+    return NextResponse.json(
+      { error: "Setup failed", details: e?.message || String(e) },
+      { status: 500 }
+    );
+  }
 }
 
 export async function GET(req: NextRequest) {
-  const shop = await resolveShop(req);
-  const { data, error } = await supabase
-    .from("digest_settings")
-    .select("email, daily_enabled, weekly_enabled")
-    .eq("shop_id", shop.id)
-    .maybeSingle(); // ✅ instead of single()
-console.log("SETUP", { shopId: shop.id, error: error?.message });
+  try {
+    const shop = await resolveShop(req);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data || {});
+    const { data, error } = await supabase
+      .from("digest_settings")
+      .select("email, daily_enabled, weekly_enabled")
+      .eq("shop_id", shop.id)
+      .maybeSingle();
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(data || {});
+  } catch (e: any) {
+    if (e instanceof HttpError) {
+      return NextResponse.json({ error: e.message }, { status: e.status });
+    }
+    return NextResponse.json(
+      { error: "Setup fetch failed", details: e?.message || String(e) },
+      { status: 500 }
+    );
+  }
 }
-

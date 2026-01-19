@@ -17,7 +17,7 @@ import InsightCard from "@/components/InsightCard";
 import { buildPathWithHost } from "@/lib/host";
 import { useApiFetch } from "@/hooks/useApiFetch";
 
-type Insight = {
+type InsightRow = {
   id: string;
   type: string;
   title: string;
@@ -29,10 +29,10 @@ type Insight = {
 };
 
 export default function InsightsPage() {
-  const [insights, setInsights] = useState<Insight[]>([]);
+  const [insights, setInsights] = useState<InsightRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanLoading, setScanLoading] = useState(false);
-  const [banner, setBanner] = useState<{ message: string } | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
 
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -48,7 +48,8 @@ export default function InsightsPage() {
     if (!insights.length) return "No scans yet";
     const created = insights[0].created_at ? new Date(insights[0].created_at) : null;
     if (!created) return "No scans yet";
-    const diffMinutes = Math.floor((Date.now() - created.getTime()) / 60000);
+    const diffMs = Date.now() - created.getTime();
+    const diffMinutes = Math.floor(diffMs / 60000);
     if (diffMinutes < 1) return "Just now";
     if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes === 1 ? "" : "s"} ago`;
     const diffHours = Math.floor(diffMinutes / 60);
@@ -57,82 +58,29 @@ export default function InsightsPage() {
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
   }, [insights]);
 
-  async function reconnect() {
-  const host = hostParam || window.localStorage.getItem("shopifyHost") || "";
-  if (!host) {
-    router.replace("/app/error"); // truly missing embedded context
-    return;
-  }
-
-  // whoami already works for you
-  const meRes = await apiFetch("/api/whoami", { cache: "no-store" });
-  if (!meRes.ok) {
-    router.replace(withHost("/app/error"));
-    return;
-  }
-  if (meRes.status === 403) {
-  await reconnect();
-  return;
-}
-  const me = await meRes.json();
-  const shop = me?.shop;
-  if (!shop) {
-    router.replace(withHost("/app/error"));
-    return;
-  }
-
-  // IMPORTANT: use window.top for embedded
-  window.top!.location.href = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
-}
-
-
   const fetchInsights = useCallback(async () => {
     setLoading(true);
     try {
-      // 1) Check setup
-      const settingsRes = await apiFetch("/api/setup", { cache: "no-store" });
-
-      if (settingsRes.ok) {
-        const settingsText = await settingsRes.text();
-        const settings = settingsText ? JSON.parse(settingsText) : null;
-
-        if (!settings?.email) {
-          router.replace(withHost("/app/setup"));
-          return;
-        }
-        if (settingsRes.status === 403) {
-  await reconnect();
-  return;
-}
-      } else if (settingsRes.status === 401) {
+      // Ensure setup exists; if not configured, send user to setup
+      const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
+      if (setupRes.status === 401) {
         router.replace(withHost("/app/error"));
         return;
       }
+      if (setupRes.ok) {
+        const setup = await setupRes.json().catch(() => ({}));
+        if (!setup?.email) {
+          router.replace(withHost("/app/setup"));
+          return;
+        }
+      }
 
-      // 2) Load insights list
       const res = await apiFetch("/api/insights", { cache: "no-store" });
-      const me = await apiFetch("/api/whoami");
-console.log("whoami", me.status, await me.text());
-const scopes = await apiFetch("/api/debug/scopes/");
-console.log("scopes", scopes.status, await scopes.text());
-
-if (res.status === 403) {
-  await reconnect();
-  return;
-}
       if (res.status === 401) {
         router.replace(withHost("/app/error"));
         return;
       }
-      if (!res.ok) {
-  const t = await res.text();
-  console.error("Insights list failed:", res.status, t?.slice(0, 300));
-  setInsights([]);
-  return;
-}
-
-      const text = await res.text();
-      const data = text ? JSON.parse(text) : [];
+      const data = await res.json().catch(() => []);
       setInsights(Array.isArray(data) ? data.slice(0, 5) : []);
     } finally {
       setLoading(false);
@@ -143,26 +91,11 @@ if (res.status === 403) {
     fetchInsights();
   }, [fetchInsights]);
 
-  useEffect(() => {
-    const scan = searchParams.get("scan");
-    const count = searchParams.get("count");
-    if (scan === "complete") {
-      setBanner({ message: `Scan complete — ${count ?? "0"} insights found.` });
-      router.replace(withHost("/app/insights"));
-    }
-  }, [router, searchParams, withHost]);
-
   const runScan = useCallback(async () => {
     setScanLoading(true);
     try {
-      // ✅ IMPORTANT: use the apiFetch hook instance from top-level (includes Authorization)
       const res = await apiFetch("/api/insights/run", { method: "POST" });
-      if (res.status === 403) {
-  await reconnect();
-  return;
-}
 
-      // If shop context missing, route to error (not setup)
       if (res.status === 401) {
         router.replace(withHost("/app/error"));
         return;
@@ -173,25 +106,17 @@ if (res.status === 403) {
       try {
         json = text ? JSON.parse(text) : null;
       } catch {
-        // ignore
+        json = null;
       }
 
       if (!res.ok) {
         console.error("Insights run failed:", res.status, text?.slice(0, 500));
-        // If shop not installed/token missing, take user to setup/connect flow
-        if (res.status === 403) {
-          router.replace(withHost("/app/setup"));
-          await reconnect();
-          return;
-        }
-        throw new Error(`Insights API failed: ${res.status}`);
+        setBanner("Scan failed. Check logs.");
+        return;
       }
-const scopes = await apiFetch("/api/debug/scopes/");
-console.log("scopes", scopes.status, await scopes.text());
-      // Your run endpoint returns { insight }, not { insights }
-      const count = json?.insight ? 1 : 0;
-      setBanner({ message: `Scan complete — ${count} insight${count === 1 ? "" : "s"} found.` });
 
+      const count = Array.isArray(json?.insights) ? json.insights.length : 0;
+      setBanner(`Scan complete — ${count} insight${count === 1 ? "" : "s"} found.`);
       await fetchInsights();
     } finally {
       setScanLoading(false);
@@ -208,13 +133,15 @@ console.log("scopes", scopes.status, await scopes.text());
       title="Today’s insights"
       subtitle={`Last scan: ${lastScan}`}
       primaryAction={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
-      secondaryActions={[{ content: "Settings", onAction: () => router.push(withHost("/app/settings")) }]}
+      secondaryActions={[
+        { content: "Settings", onAction: () => router.push(withHost("/app/settings")) },
+      ]}
     >
       <Layout>
         <Layout.Section>
           <BlockStack gap="300">
             {banner && (
-              <Banner tone="success" title={banner.message} onDismiss={() => setBanner(null)} />
+              <Banner tone="success" title={banner} onDismiss={() => setBanner(null)} />
             )}
 
             {loading ? (
@@ -229,7 +156,6 @@ console.log("scopes", scopes.status, await scopes.text());
                 <EmptyState
                   heading="Nothing critical today"
                   image="https://cdn.shopify.com/static/images/admin/emptystate.svg"
-                  //action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
                   secondaryAction={{
                     content: "Settings",
                     onAction: () => router.push(withHost("/app/settings")),
@@ -243,7 +169,7 @@ console.log("scopes", scopes.status, await scopes.text());
             ) : (
               <BlockStack gap="300">
                 {insights.map((insight) => (
-                  <InsightCard key={insight.id} insight={insight} />
+                  <InsightCard key={insight.id} insight={insight as any} />
                 ))}
               </BlockStack>
             )}
