@@ -1,21 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-import { buildPathWithHost } from "@/lib/host";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useApiFetch } from "@/hooks/useApiFetch";
+import { buildPathWithHost } from "@/lib/host";
 
 export default function AppEntry() {
-  const sp = useSearchParams();
   const router = useRouter();
+  const sp = useSearchParams();
   const apiFetch = useApiFetch();
-
-  const didRun = useRef(false);
-  const [err, setErr] = useState<string | null>(null);
+  const once = useRef(false);
+  const [msg, setMsg] = useState("Booting…");
 
   useEffect(() => {
-    if (didRun.current) return;
-    didRun.current = true;
+    if (once.current) return;
+    once.current = true;
 
     (async () => {
       const host = sp.get("host") || "";
@@ -24,56 +23,63 @@ export default function AppEntry() {
         return;
       }
 
-      // 1) Who am I? (requires Authorization bearer token)
+      // 1) whoami (shop decoded from bearer)
+      setMsg("Resolving shop…");
       const whoRes = await apiFetch("/api/whoami", { cache: "no-store" });
-      if (whoRes.status === 401) {
+      const whoText = await whoRes.text().catch(() => "");
+      let who: any = {};
+      try { who = whoText ? JSON.parse(whoText) : {}; } catch {}
+
+      if (!whoRes.ok || !who?.shop) {
         router.replace(buildPathWithHost("/app/error", host));
         return;
       }
-      const who = await whoRes.json().catch(() => ({}));
-      const shop = (who?.shop || "").toLowerCase();
-      if (!shop) {
+      const shop = String(who.shop).toLowerCase();
+
+      // 2) install status (must NOT rely on shops row existing)
+      setMsg("Checking install status…");
+      const instRes = await apiFetch("/api/install-status", { cache: "no-store" });
+      const instText = await instRes.text().catch(() => "");
+      let inst: any = {};
+      try { inst = instText ? JSON.parse(instText) : {}; } catch {}
+
+      if (instRes.status === 401) {
         router.replace(buildPathWithHost("/app/error", host));
         return;
       }
 
-      // 2) Installed? (do we have a shop row + access token)
-      const installRes = await apiFetch(`/api/install-status`, { cache: "no-store" });
-      // We assume your install-status uses resolveShop and returns { installed: boolean }.
-      // If it returns something else, we’ll adjust after you paste it.
-      if (installRes.status === 401) {
-        router.replace(buildPathWithHost("/app/error", host));
-        return;
-      }
-      const installJson = await installRes.json().catch(() => ({}));
-      const installed = installJson?.ok ? Boolean(installJson?.installed) : false;
+      const installed = Boolean(inst?.ok && inst?.installed);
 
+      // 3) if NOT installed → start OAuth and STOP
       if (!installed) {
         const url = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+        // hard stop: top-level redirect for embedded apps
         window.top?.location.assign(url);
         return;
       }
 
-      // 3) Setup done?
+      // 4) setup
+      setMsg("Checking setup…");
       const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
+      const setupText = await setupRes.text().catch(() => "");
+      let setup: any = {};
+      try { setup = setupText ? JSON.parse(setupText) : {}; } catch {}
+
       if (setupRes.status === 401) {
         router.replace(buildPathWithHost("/app/error", host));
         return;
       }
-      const setupJson = await setupRes.json().catch(() => ({}));
-      const hasEmail = Boolean(setupJson?.email);
 
-      const target = hasEmail ? "/app/insights" : "/app/setup";
-      router.replace(buildPathWithHost(target, host));
-    })().catch((e: any) => {
+      const hasEmail = Boolean(setup?.email);
+
+      router.replace(buildPathWithHost(hasEmail ? "/app/insights" : "/app/setup", host));
+    })().catch((e) => {
       console.error("AppEntry bootstrap failed", e);
-      setErr(e?.message || String(e));
-      // fall back to error page with host if possible
       const host = sp.get("host") || "";
       router.replace(buildPathWithHost("/app/error", host));
     });
   }, [apiFetch, router, sp]);
 
-  // Minimal UI while routing
-  return err ? <div style={{ padding: 16 }}>{err}</div> : null;
+  // tiny visible status so you can see where it stops
+  return <div style={{ padding: 16, fontFamily: "system-ui" }}>{msg}</div>;
 }
