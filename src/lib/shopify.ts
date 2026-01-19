@@ -91,18 +91,27 @@ export async function decodeShopFromBearer(authHeader?: string): Promise<string 
   try {
     const { payload } = await jwtVerify(token, new TextEncoder().encode(SHOPIFY_API_SECRET));
 
-    // session token contains iss/dest like https://{shop}.myshopify.com/admin
-    const dest = typeof payload.dest === "string" ? payload.dest : undefined;
-    const iss = typeof payload.iss === "string" ? payload.iss : undefined;
-    const url = dest || iss;
-    if (!url) return null;
+    const iss = typeof payload.iss === "string" ? payload.iss : "";
+    const dest = typeof payload.dest === "string" ? payload.dest : "";
 
-    const host = new URL(url).host; // storepulse-2.myshopify.com
-    return host;
+    // ✅ Prefer iss when it references the shop's myshopify domain (most reliable)
+    // iss often looks like: https://storepulse-2.myshopify.com/admin
+    if (iss.includes(".myshopify.com")) {
+      return new URL(iss).host; // storepulse-2.myshopify.com
+    }
+
+    // ✅ Fallback: dest can be either myshopify or admin.shopify.com
+    if (dest.includes(".myshopify.com")) {
+      return new URL(dest).host;
+    }
+
+    // ❌ If dest is admin.shopify.com, do NOT return that as "shop"
+    return null;
   } catch {
     return null;
   }
 }
+
 
 export type ShopRecord = {
   id: string;
@@ -128,6 +137,8 @@ export async function resolveShop(req: Request): Promise<ShopRecord> {
 
   const bearerShop = await decodeShopFromBearer(authHeader);
   let shop = bearerShop;
+  console.log("RESOLVE_SHOP_DEBUG", { bearerShop });
+
 
   if (!shop) {
     const cookieHeader = req.headers.get("cookie") || undefined;
@@ -138,12 +149,11 @@ export async function resolveShop(req: Request): Promise<ShopRecord> {
     throw new HttpError(401, "Unauthorized");
   }
 
-  const record = await getShopRecord(shop);
-  if (!record) {
-    throw new HttpError(401, "Shop not found");
-  }
-
-  return record;
+ const record = await getShopRecord(shop);
+if (!record) {
+  throw new HttpError(403, "Shop not installed");
+}
+return record;
 }
 
 export async function exchangeCodeForToken(shop: string, code: string) {
