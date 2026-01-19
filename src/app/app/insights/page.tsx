@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   BlockStack,
@@ -12,32 +12,11 @@ import {
   Spinner,
   Text,
   Banner,
+  Button,
 } from "@shopify/polaris";
 import InsightCard from "@/components/InsightCard";
 import { buildPathWithHost } from "@/lib/host";
 import { useApiFetch } from "@/hooks/useApiFetch";
-import { Redirect } from "@shopify/app-bridge/actions";
-import { useAppBridge } from "@/lib/app-bridge-context";
-//import { useRef } from "react";
-
-function useShopifyRedirect() {
-  const app = useAppBridge();
-
-  return (to: string) => {
-    // must be absolute for REMOTE
-    const absolute = to.startsWith("http") ? to : `${window.location.origin}${to}`;
-
-    if (app) {
-      const redirect = Redirect.create(app);
-      redirect.dispatch(Redirect.Action.REMOTE, absolute);
-      return;
-    }
-
-    // fallback (non-embedded)
-    window.location.assign(absolute);
-  };
-}
-
 
 type InsightRow = {
   id: string;
@@ -54,13 +33,13 @@ export default function InsightsPage() {
   const [insights, setInsights] = useState<InsightRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanLoading, setScanLoading] = useState(false);
-  const [banner, setBanner] = useState<string | null>(null);
+  const [banner, setBanner] = useState<{ tone: "critical" | "warning" | "success" | "info"; title: string; body?: string } | null>(null);
+  const [setupMissing, setSetupMissing] = useState(false);
 
   const router = useRouter();
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
   const apiFetch = useApiFetch();
-const didInit = useRef(false);
 
   const withHost = useCallback(
     (path: string) => buildPathWithHost(path, hostParam),
@@ -81,110 +60,106 @@ const didInit = useRef(false);
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
   }, [insights]);
 
-const redirectRemote = useShopifyRedirect();
+  const fetchInsights = useCallback(async () => {
+    setLoading(true);
+    setBanner(null);
+    setSetupMissing(false);
 
-const fetchInsights = useCallback(async () => {
-  setLoading(true);
-  try {
-   const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
+    try {
+      // 1) Setup check (do NOT redirect automatically)
+      const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
 
-if (setupRes.status === 401) {
-  setBanner("Missing shop context. Please relaunch from Shopify Admin.");
-  return;
-}
-
-if (setupRes.status === 403) {
-  setBanner("Shop not installed yet. Please reinstall the app.");
-  return;
-}
-
-let setup: any = {};
-try { setup = await setupRes.json(); } catch {}
-
-// TEMP: do not redirect to /app/setup yet (it causes loops in messy states)
-if (!setup?.email) {
-  setBanner("Setup incomplete: add email in Settings to enable digests (we’ll still show insights).");
-}
-
-
-    if (setupRes.ok) {
-      const setup = await setupRes.json().catch(() => ({}));
-      if (!setup?.email) {
-        router.replace(withHost("/app/setup"));
+      if (setupRes.status === 401) {
+        setBanner({ tone: "critical", title: "Missing shop context", body: "Please relaunch this app from Shopify Admin." });
         return;
       }
-    }
+      if (setupRes.status === 403) {
+        setBanner({ tone: "critical", title: "Shop not installed", body: "Please reinstall the app." });
+        return;
+      }
 
-    const res = await apiFetch("/api/insights", { cache: "no-store" });
-    if (res.status === 401) {
-      router.replace(withHost("/app/error"));
-      return;
-    }
-    const data = await res.json().catch(() => []);
-    setInsights(Array.isArray(data) ? data.slice(0, 5) : []);
-  } finally {
-    setLoading(false);
-  }
-}, [apiFetch, router, withHost, hostParam, redirectRemote]);
+      let setup: any = {};
+      try {
+        setup = await setupRes.json();
+      } catch {
+        setup = {};
+      }
 
+      if (!setup?.email) {
+        setSetupMissing(true);
+        setBanner({
+          tone: "warning",
+          title: "Finish setup to enable scans",
+          body: "Add an email in Setup so we can send daily/weekly digests. You can still view insights history.",
+        });
+      }
+
+      // 2) Insights list
+      const res = await apiFetch("/api/insights", { cache: "no-store" });
+
+      if (res.status === 401) {
+        setBanner({ tone: "critical", title: "Missing shop context", body: "Please relaunch this app from Shopify Admin." });
+        return;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        setBanner({ tone: "critical", title: "Failed to load insights", body: text || `HTTP ${res.status}` });
+        return;
+      }
+
+      const data = await res.json().catch(() => []);
+      setInsights(Array.isArray(data) ? data.slice(0, 5) : []);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFetch]);
 
   useEffect(() => {
     fetchInsights();
   }, [fetchInsights]);
 
-  useEffect(() => {
-  if (didInit.current) return;
-  didInit.current = true;
-  fetchInsights();
-}, [fetchInsights]);
+  const runScan = useCallback(async () => {
+    setScanLoading(true);
+    setBanner(null);
 
-//const redirectRemote = useShopifyRedirect();
-
-const runScan = useCallback(async () => {
-  setScanLoading(true);
-  try {
-    const res = await apiFetch("/api/insights/run", { method: "POST" });
-
-    if (res.status === 401) {
-      router.replace(withHost("/app/error"));
-      return;
-    }
-
-    if (res.status === 403) {
-      const who = await apiFetch("/api/whoami", { cache: "no-store" });
-      const whoJson = await who.json().catch(() => ({}));
-      const shop = whoJson?.shop;
-
-      if (shop) {
-        redirectRemote(
-          `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(hostParam)}`
-        );
+    try {
+      // If setup missing, do NOT auto-redirect; give a clear CTA
+      if (setupMissing) {
+        setBanner({
+          tone: "warning",
+          title: "Setup required",
+          body: "Please add an email in Setup before running a scan.",
+        });
         return;
       }
 
-      setBanner("Missing shop context. Please relaunch from Shopify Admin.");
-      return;
+      const res = await apiFetch("/api/insights/run", { method: "POST" });
+
+      if (res.status === 401) {
+        setBanner({ tone: "critical", title: "Missing shop context", body: "Please relaunch this app from Shopify Admin." });
+        return;
+      }
+      if (res.status === 403) {
+        const text = await res.text().catch(() => "");
+        setBanner({ tone: "critical", title: "Shop not installed", body: text || "Missing access token. Reinstall the app." });
+        return;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        setBanner({ tone: "critical", title: "Scan failed", body: text || `HTTP ${res.status}` });
+        return;
+      }
+
+      const json = await res.json().catch(() => ({}));
+      const count = Array.isArray(json?.insights) ? json.insights.length : (json?.insight ? 1 : 0);
+
+      setBanner({ tone: "success", title: `Scan complete — ${count} insight${count === 1 ? "" : "s"} found.` });
+
+      await fetchInsights();
+    } finally {
+      setScanLoading(false);
     }
-
-    const text = await res.text();
-    let json: any = null;
-    try { json = text ? JSON.parse(text) : null; } catch {}
-
-    if (!res.ok) {
-      console.error("Insights run failed:", res.status, text?.slice(0, 500));
-      setBanner("Scan failed. Check logs.");
-      return;
-    }
-
-    const count = Array.isArray(json?.insights) ? json.insights.length : 0;
-    setBanner(`Scan complete — ${count} insight${count === 1 ? "" : "s"} found.`);
-    await fetchInsights();
-  } finally {
-    setScanLoading(false);
-  }
-}, [apiFetch, router, withHost, hostParam, redirectRemote, fetchInsights]);
-
-
+  }, [apiFetch, setupMissing, fetchInsights]);
 
   const shouldShowEmpty = useMemo(() => {
     if (!insights.length) return true;
@@ -204,7 +179,14 @@ const runScan = useCallback(async () => {
         <Layout.Section>
           <BlockStack gap="300">
             {banner && (
-              <Banner tone="success" title={banner} onDismiss={() => setBanner(null)} />
+              <Banner tone={banner.tone} title={banner.title} onDismiss={() => setBanner(null)}>
+                {banner.body ? <p>{banner.body}</p> : null}
+                {setupMissing ? (
+                  <div style={{ marginTop: 12 }}>
+                    <Button onClick={() => router.push(withHost("/app/setup"))}>Go to Setup</Button>
+                  </div>
+                ) : null}
+              </Banner>
             )}
 
             {loading ? (
@@ -219,13 +201,14 @@ const runScan = useCallback(async () => {
                 <EmptyState
                   heading="Nothing critical today"
                   image="https://cdn.shopify.com/static/images/admin/emptystate.svg"
+                  action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
                   secondaryAction={{
-                    content: "Settings",
-                    onAction: () => router.push(withHost("/app/settings")),
+                    content: "Setup",
+                    onAction: () => router.push(withHost("/app/setup")),
                   }}
                 >
                   <Text as="p" tone="subdued">
-                    Your store looks stable based on the last scan. We’ll email you when something changes.
+                    Your store looks stable based on the last scan.
                   </Text>
                 </EmptyState>
               </Card>
@@ -242,5 +225,3 @@ const runScan = useCallback(async () => {
     </Page>
   );
 }
-
-
