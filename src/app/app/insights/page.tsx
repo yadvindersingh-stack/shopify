@@ -19,7 +19,6 @@ import { useApiFetch } from "@/hooks/useApiFetch";
 import { Redirect } from "@shopify/app-bridge/actions";
 import { useAppBridge } from "@/lib/app-bridge-context";
 //import { useRef } from "react";
-const didInit = useRef(false);
 
 function useShopifyRedirect() {
   const app = useAppBridge();
@@ -61,6 +60,7 @@ export default function InsightsPage() {
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
   const apiFetch = useApiFetch();
+const didInit = useRef(false);
 
   const withHost = useCallback(
     (path: string) => buildPathWithHost(path, hostParam),
@@ -132,19 +132,11 @@ if (!setup?.email) {
     fetchInsights();
   }, [fetchInsights]);
 
-useEffect(() => {
-  let cancelled = false;
-
-  (async () => {
-    if (cancelled) return;
-    await fetchInsights();
-  })();
-
-  return () => {
-    cancelled = true;
-  };
-}, []); // <-- empty deps
-
+  useEffect(() => {
+  if (didInit.current) return;
+  didInit.current = true;
+  fetchInsights();
+}, [fetchInsights]);
 
 //const redirectRemote = useShopifyRedirect();
 
