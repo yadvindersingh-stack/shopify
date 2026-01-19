@@ -18,6 +18,10 @@ import { buildPathWithHost } from "@/lib/host";
 import { useApiFetch } from "@/hooks/useApiFetch";
 import { Redirect } from "@shopify/app-bridge/actions";
 import { useAppBridge } from "@/lib/app-bridge-context";
+import { useRef } from "react";
+const didInit = useRef(false);
+
+
 
 function useShopifyRedirect() {
   const app = useAppBridge();
@@ -84,28 +88,26 @@ const redirectRemote = useShopifyRedirect();
 const fetchInsights = useCallback(async () => {
   setLoading(true);
   try {
-    const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
+   const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
 
-    if (setupRes.status === 401) {
-      router.replace(withHost("/app/error"));
-      return;
-    }
+if (setupRes.status === 401) {
+  setBanner("Missing shop context. Please relaunch from Shopify Admin.");
+  return;
+}
 
-    if (setupRes.status === 403) {
-      const who = await apiFetch("/api/whoami", { cache: "no-store" });
-      const whoJson = await who.json().catch(() => ({}));
-      const shop = whoJson?.shop;
+if (setupRes.status === 403) {
+  setBanner("Shop not installed yet. Please reinstall the app.");
+  return;
+}
 
-      if (shop) {
-        redirectRemote(
-          `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(hostParam)}`
-        );
-        return;
-      }
+let setup: any = {};
+try { setup = await setupRes.json(); } catch {}
 
-      router.replace(withHost("/app/error"));
-      return;
-    }
+// TEMP: do not redirect to /app/setup yet (it causes loops in messy states)
+if (!setup?.email) {
+  setBanner("Setup incomplete: add email in Settings to enable digests (we’ll still show insights).");
+}
+
 
     if (setupRes.ok) {
       const setup = await setupRes.json().catch(() => ({}));
@@ -131,6 +133,13 @@ const fetchInsights = useCallback(async () => {
   useEffect(() => {
     fetchInsights();
   }, [fetchInsights]);
+
+  useEffect(() => {
+  if (didInit.current) return;
+  didInit.current = true;
+  fetchInsights();
+}, [fetchInsights]);
+
 //const redirectRemote = useShopifyRedirect();
 
 const runScan = useCallback(async () => {
