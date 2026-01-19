@@ -7,6 +7,13 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
+    console.log("SETUP_401_DEBUG", {
+  url: req.url,
+  authPresent: Boolean(req.headers.get("authorization")),
+  authPrefix: req.headers.get("authorization")?.slice(0, 20) || null,
+  cookiePresent: Boolean(req.headers.get("cookie")),
+});
+
     const shop = await resolveShop(req);
 
     const body = await req.json().catch(() => ({}));
@@ -36,6 +43,13 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
+    console.log("SETUP_401_DEBUG", {
+  url: req.url,
+  authPresent: Boolean(req.headers.get("authorization")),
+  authPrefix: req.headers.get("authorization")?.slice(0, 20) || null,
+  cookiePresent: Boolean(req.headers.get("cookie")),
+});
+
     const shop = await resolveShop(req);
 
     const { data, error } = await supabase
