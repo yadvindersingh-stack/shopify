@@ -188,6 +188,23 @@ export default function InsightsPage() {
                 ) : null}
               </Banner>
             )}
+{banner?.title === "Shop not installed" ? (
+  <div style={{ marginTop: 12 }}>
+    <Button
+      onClick={async () => {
+        const whoRes = await apiFetch("/api/whoami", { cache: "no-store" });
+        const who = await whoRes.json().catch(() => ({}));
+        const shop = who?.shop;
+        if (!shop) return;
+        window.top?.location.assign(
+          `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(hostParam)}`
+        );
+      }}
+    >
+      Install / reconnect
+    </Button>
+  </div>
+) : null}
 
             {loading ? (
               <InlineStack align="center">
