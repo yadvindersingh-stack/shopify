@@ -34,6 +34,8 @@ export async function GET(req: NextRequest) {
 
   const shop = normalizeShopDomain(shopParam);
   const state = encodeState({ host });
+  
+console.log("AUTH_START", { shop, host });
 
   const authUrl =
     `https://${shop}/admin/oauth/authorize` +

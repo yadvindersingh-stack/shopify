@@ -67,6 +67,18 @@ export default function InsightsPage() {
         router.replace(withHost("/app/error"));
         return;
       }
+      if (setupRes.status === 403) {
+  const who = await apiFetch("/api/whoami", { cache: "no-store" });
+  const whoJson = await who.json().catch(() => ({}));
+  const shop = whoJson?.shop;
+  if (shop) {
+    window.top?.location.assign(
+      `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(hostParam)}`
+    );
+    return;
+  }
+}
+
       if (setupRes.ok) {
         const setup = await setupRes.json().catch(() => ({}));
         if (!setup?.email) {
@@ -92,36 +104,59 @@ export default function InsightsPage() {
   }, [fetchInsights]);
 
   const runScan = useCallback(async () => {
-    setScanLoading(true);
-    try {
-      const res = await apiFetch("/api/insights/run", { method: "POST" });
+  setScanLoading(true);
+  try {
+    const res = await apiFetch("/api/insights/run", { method: "POST" });
 
-      if (res.status === 401) {
-        router.replace(withHost("/app/error"));
-        return;
-      }
-
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {
-        json = null;
-      }
-
-      if (!res.ok) {
-        console.error("Insights run failed:", res.status, text?.slice(0, 500));
-        setBanner("Scan failed. Check logs.");
-        return;
-      }
-
-      const count = Array.isArray(json?.insights) ? json.insights.length : 0;
-      setBanner(`Scan complete — ${count} insight${count === 1 ? "" : "s"} found.`);
-      await fetchInsights();
-    } finally {
-      setScanLoading(false);
+    // If embedded context missing entirely
+    if (res.status === 401) {
+      router.replace(withHost("/app/error"));
+      return;
     }
-  }, [apiFetch, router, withHost, fetchInsights]);
+
+    // If we can decode shop from bearer but shop isn't installed/stored yet
+    if (res.status === 403) {
+      // call whoami to get the shop domain reliably
+      const who = await apiFetch("/api/whoami", { cache: "no-store" });
+      const whoJson = await who.json().catch(() => ({}));
+      const shop = whoJson?.shop;
+
+      if (shop) {
+        const url = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(
+          hostParam
+        )}`;
+
+        // IMPORTANT: embedded apps must redirect the top frame
+        window.top?.location.assign(url);
+        return;
+      }
+
+      router.replace(withHost("/app/error"));
+      return;
+    }
+
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+
+    if (!res.ok) {
+      console.error("Insights run failed:", res.status, text?.slice(0, 500));
+      setBanner("Scan failed. Check logs.");
+      return;
+    }
+
+    const count = Array.isArray(json?.insights) ? json.insights.length : 0;
+    setBanner(`Scan complete — ${count} insight${count === 1 ? "" : "s"} found.`);
+    await fetchInsights();
+  } finally {
+    setScanLoading(false);
+  }
+}, [apiFetch, router, withHost, hostParam, fetchInsights]);
+
 
   const shouldShowEmpty = useMemo(() => {
     if (!insights.length) return true;

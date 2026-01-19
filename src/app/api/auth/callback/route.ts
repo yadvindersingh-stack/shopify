@@ -85,6 +85,7 @@ export async function GET(req: NextRequest) {
     if (error) {
       return NextResponse.json({ error: "Failed to persist shop token", details: error.message }, { status: 500 });
     }
+console.log("AUTH_CALLBACK", { shop, hasCode: Boolean(code) });
 
     // After install, go to insights (setup later)
     const target = new URL(`/app/insights?host=${encodeURIComponent(host)}`, APP_URL).toString();
