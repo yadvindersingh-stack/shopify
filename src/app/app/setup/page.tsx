@@ -1,4 +1,5 @@
 "use client";
+
 import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -11,6 +12,7 @@ import {
   Page,
   Text,
   TextField,
+  Banner,
 } from "@shopify/polaris";
 import { useApiFetch } from "@/hooks/useApiFetch";
 
@@ -26,6 +28,8 @@ function SetupPageInner() {
   const [weekly, setWeekly] = useState(true);
   const [loading, setLoading] = useState(false);
   const [prefillLoading, setPrefillLoading] = useState(true);
+  const [banner, setBanner] = useState<string | null>(null);
+
   const router = useRouter();
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
@@ -35,74 +39,79 @@ function SetupPageInner() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await apiFetch("/api/setup", { method: "GET" });
+        const res = await apiFetch("/api/setup", { method: "GET", cache: "no-store" });
+
+        if (res.status === 401) {
+          router.replace(withHost("/app/error"));
+          return;
+        }
+
         if (res.ok) {
-          const data = await res.json();
+          const data = await res.json().catch(() => ({}));
           if (data?.email) setEmail(data.email);
           if (typeof data?.daily_enabled === "boolean") setDaily(data.daily_enabled);
           if (typeof data?.weekly_enabled === "boolean") setWeekly(data.weekly_enabled);
         }
+      } catch (e: any) {
+        setBanner(e?.message || "Failed to load setup settings");
       } finally {
         setPrefillLoading(false);
       }
     })();
-  }, []);
+  }, [apiFetch, router, hostParam]);
 
-  const primaryDisabled = useMemo(() => !email.trim() || loading || prefillLoading, [email, loading, prefillLoading]);
+  const primaryDisabled = useMemo(
+    () => !email.trim() || loading || prefillLoading,
+    [email, loading, prefillLoading]
+  );
 
-  async function handleRunScan() {
+  async function handleSave() {
     setLoading(true);
+    setBanner(null);
     try {
-      await apiFetch("/api/setup", {
+      const res = await apiFetch("/api/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, daily_enabled: daily, weekly_enabled: weekly }),
       });
-      const res = await apiFetch("/api/insights/run", { method: "POST", cache: "no-store" });
+
       if (res.status === 401) {
-        router.replace(withHost("/app/setup"));
+        router.replace(withHost("/app/error"));
         return;
       }
 
-      const text = await res.text(); // read raw first
-      let json: any = null;
-
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {
-        // not JSON (could be HTML error page)
-      }
-
       if (!res.ok) {
-        console.error("Insights run failed:", res.status, text?.slice(0, 500));
-        throw new Error(`Insights API failed: ${res.status}`);
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Setup save failed (${res.status})`);
       }
 
-      if (!json) {
-        console.error("Insights API returned empty/non-JSON body:", res.status, text?.slice(0, 500));
-        throw new Error("Insights API returned invalid response");
-      }
-
-      const count = Array.isArray(json?.insights) ? json.insights.length : 0;
-      const base = `/app/insights?scan=complete&count=${count}`;
-      router.push(withHost(base));
+      router.replace(withHost("/app/insights"));
     } catch (e: any) {
-      console.error("Failed to run insights", e);
-      throw e;
+      setBanner(e?.message || "Failed to save settings");
     } finally {
       setLoading(false);
     }
   }
-      
+
   return (
-    <Page title="Your daily store action list" subtitle="We scan your store and email the most important things to fix. No changes are made automatically.">
+    <Page
+      title="Your daily store action list"
+      subtitle="We scan your store and email the most important things to fix. No changes are made automatically."
+    >
       <Layout>
         <Layout.Section>
+          {banner && (
+            <Banner tone="critical" title="Setup problem">
+              <p>{banner}</p>
+            </Banner>
+          )}
+
           <Card>
             <BlockStack gap="400">
               <Text as="h2" variant="headingSm">
                 Email & cadence
               </Text>
+
               <TextField
                 label="Send insights to"
                 type="email"
@@ -112,6 +121,7 @@ function SetupPageInner() {
                 autoComplete="email"
                 helpText="We'll use this email for all digests."
               />
+
               <BlockStack gap="200">
                 <Checkbox
                   label="Daily insights"
@@ -125,21 +135,19 @@ function SetupPageInner() {
                   onChange={(value) => setWeekly(Boolean(value))}
                 />
               </BlockStack>
-            </BlockStack>
-          </Card>
-        </Layout.Section>
 
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="200">
-              <Text as="h2" variant="headingSm">
-                First scan
-              </Text>
               <InlineStack gap="200">
-                <Button variant="primary" loading={loading} disabled={primaryDisabled} onClick={handleRunScan}>
-                  {loading ? "Running scan..." : "Run my first scan"}
+                <Button
+                  variant="primary"
+                  loading={loading}
+                  disabled={primaryDisabled}
+                  onClick={handleSave}
+                >
+                  Save & continue
                 </Button>
-                <Button variant="plain" onClick={() => router.push(withHost("/app/insights"))}>Skip for now</Button>
+                <Button variant="plain" onClick={() => router.push(withHost("/app/insights"))}>
+                  Skip for now
+                </Button>
               </InlineStack>
             </BlockStack>
           </Card>
