@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   BlockStack,
@@ -18,10 +18,8 @@ import { buildPathWithHost } from "@/lib/host";
 import { useApiFetch } from "@/hooks/useApiFetch";
 import { Redirect } from "@shopify/app-bridge/actions";
 import { useAppBridge } from "@/lib/app-bridge-context";
-import { useRef } from "react";
+//import { useRef } from "react";
 const didInit = useRef(false);
-
-
 
 function useShopifyRedirect() {
   const app = useAppBridge();
@@ -244,3 +242,5 @@ const runScan = useCallback(async () => {
     </Page>
   );
 }
+
+
