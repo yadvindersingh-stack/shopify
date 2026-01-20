@@ -32,14 +32,13 @@ async function exchangeCodeForToken(shop: string, code: string) {
 
   const text = await res.text();
   let json: any = null;
-  try { json = text ? JSON.parse(text) : null; } catch {}
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {}
 
-  if (!res.ok) {
-    throw new Error(`Token exchange failed ${res.status}: ${text?.slice(0, 300)}`);
-  }
-  if (!json?.access_token) {
-    throw new Error(`Token exchange missing access_token: ${text?.slice(0, 300)}`);
-  }
+  if (!res.ok) throw new Error(`Token exchange failed ${res.status}: ${text?.slice(0, 300)}`);
+  if (!json?.access_token) throw new Error(`Token exchange missing access_token: ${text?.slice(0, 300)}`);
+
   return json.access_token as string;
 }
 
@@ -49,8 +48,7 @@ export async function GET(req: NextRequest) {
   const hostParam = (req.nextUrl.searchParams.get("host") || "").trim();
   const state = req.nextUrl.searchParams.get("state");
 
-  const stateHost = decodeState(state).host || "";
-  const host = hostParam || stateHost;
+  const host = hostParam || decodeState(state).host || "";
 
   console.log("AUTH_CALLBACK_HIT", {
     shop,
@@ -59,11 +57,15 @@ export async function GET(req: NextRequest) {
     APP_URL_present: Boolean(APP_URL),
   });
 
-  if (!APP_URL) {
-    return NextResponse.json({ ok: false, error: "Missing SHOPIFY_APP_URL" }, { status: 500 });
-  }
+  if (!APP_URL) return NextResponse.json({ ok: false, error: "Missing SHOPIFY_APP_URL" }, { status: 500 });
+  if (!API_KEY) return NextResponse.json({ ok: false, error: "Missing NEXT_PUBLIC_SHOPIFY_API_KEY" }, { status: 500 });
+  if (!API_SECRET) return NextResponse.json({ ok: false, error: "Missing SHOPIFY_API_SECRET" }, { status: 500 });
+
   if (!shop || !code) {
-    return NextResponse.json({ ok: false, error: "Missing shop or code", shop, hasCode: Boolean(code) }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: "Missing shop or code", shop, hasCode: Boolean(code) },
+      { status: 400 }
+    );
   }
   if (!shop.endsWith(".myshopify.com")) {
     return NextResponse.json({ ok: false, error: "Invalid shop", shop }, { status: 400 });
@@ -72,24 +74,35 @@ export async function GET(req: NextRequest) {
   try {
     const access_token = await exchangeCodeForToken(shop, code);
 
+    // IMPORTANT: specify conflict target so it truly upserts
     const { error } = await supabase
       .from("shops")
-      .upsert({
-        shop_domain: shop,
-        access_token,
-        email: "unknown@example.com",
-        timezone: "UTC",
-      });
+      .upsert(
+        {
+          shop_domain: shop,
+          access_token,
+          email: "unknown@example.com",
+          timezone: "UTC",
+        },
+        { onConflict: "shop_domain" }
+      );
 
     if (error) {
       console.log("SHOP_UPSERT_FAILED", { message: error.message });
-      return NextResponse.json({ ok: false, error: "Failed to persist shop", details: error.message }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: "Failed to persist shop", details: error.message },
+        { status: 500 }
+      );
     }
 
+    // Send them back to the app entry (canonical router)
     const target = `${APP_URL}/app?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
     return NextResponse.redirect(target, 302);
   } catch (e: any) {
     console.log("AUTH_CALLBACK_FAILED", { message: e?.message || String(e) });
-    return NextResponse.json({ ok: false, error: "Callback failed", details: e?.message || String(e) }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "Callback failed", details: e?.message || String(e) },
+      { status: 500 }
+    );
   }
 }
