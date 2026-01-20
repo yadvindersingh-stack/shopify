@@ -1,47 +1,45 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useApiFetch } from "@/hooks/useApiFetch";
 import { buildPathWithHost } from "@/lib/host";
+import TopRedirect from "@/components/TopRedirect";
 
 export default function AppEntry() {
   const router = useRouter();
   const sp = useSearchParams();
   const apiFetch = useApiFetch();
   const once = useRef(false);
+
   const [msg, setMsg] = useState("Booting…");
+  const [oauthUrl, setOauthUrl] = useState<string | null>(null);
+
+  const host = useMemo(() => sp.get("host") || "", [sp]);
 
   useEffect(() => {
     if (once.current) return;
     once.current = true;
 
     (async () => {
-      const host = sp.get("host") || "";
       if (!host) {
         router.replace("/app/error");
         return;
       }
 
-      // 1) whoami (shop decoded from bearer)
       setMsg("Resolving shop…");
       const whoRes = await apiFetch("/api/whoami", { cache: "no-store" });
-      const whoText = await whoRes.text().catch(() => "");
-      let who: any = {};
-      try { who = whoText ? JSON.parse(whoText) : {}; } catch {}
+      const who = await whoRes.json().catch(() => ({}));
+      const shop = String(who?.shop || "").toLowerCase();
 
-      if (!whoRes.ok || !who?.shop) {
+      if (!whoRes.ok || !shop) {
         router.replace(buildPathWithHost("/app/error", host));
         return;
       }
-      const shop = String(who.shop).toLowerCase();
 
-      // 2) install status (must NOT rely on shops row existing)
       setMsg("Checking install status…");
       const instRes = await apiFetch("/api/install-status", { cache: "no-store" });
-      const instText = await instRes.text().catch(() => "");
-      let inst: any = {};
-      try { inst = instText ? JSON.parse(instText) : {}; } catch {}
+      const inst = await instRes.json().catch(() => ({}));
 
       if (instRes.status === 401) {
         router.replace(buildPathWithHost("/app/error", host));
@@ -50,20 +48,15 @@ export default function AppEntry() {
 
       const installed = Boolean(inst?.ok && inst?.installed);
 
-      // 3) if NOT installed → start OAuth and STOP
       if (!installed) {
         const url = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
-        // hard stop: top-level redirect for embedded apps
-        window.top?.location.assign(url);
+        setOauthUrl(url);
         return;
       }
 
-      // 4) setup
       setMsg("Checking setup…");
       const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
-      const setupText = await setupRes.text().catch(() => "");
-      let setup: any = {};
-      try { setup = setupText ? JSON.parse(setupText) : {}; } catch {}
+      const setup = await setupRes.json().catch(() => ({}));
 
       if (setupRes.status === 401) {
         router.replace(buildPathWithHost("/app/error", host));
@@ -71,15 +64,15 @@ export default function AppEntry() {
       }
 
       const hasEmail = Boolean(setup?.email);
-
       router.replace(buildPathWithHost(hasEmail ? "/app/insights" : "/app/setup", host));
     })().catch((e) => {
       console.error("AppEntry bootstrap failed", e);
-      const host = sp.get("host") || "";
       router.replace(buildPathWithHost("/app/error", host));
     });
-  }, [apiFetch, router, sp]);
+  }, [apiFetch, router, host]);
 
-  // tiny visible status so you can see where it stops
+  // This is the key: redirect via App Bridge if we need OAuth
+  if (oauthUrl) return <TopRedirect url={oauthUrl} />;
+
   return <div style={{ padding: 16, fontFamily: "system-ui" }}>{msg}</div>;
 }
