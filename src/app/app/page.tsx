@@ -49,8 +49,13 @@ export default function AppEntry() {
       const installed = Boolean(inst?.ok && inst?.installed);
 
       if (!installed) {
-        const url = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
-        setOauthUrl(url);
+        const relative = `/api/auth/start?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
+        // Absolute URL is key for embedded REMOTE redirect reliability
+        const absolute = typeof window !== "undefined" ? new URL(relative, window.location.origin).toString() : relative;
+
+        console.log("NEED_INSTALL_REDIRECT", { shop, host, absolute });
+
+        setOauthUrl(absolute);
         return;
       }
 
@@ -71,7 +76,6 @@ export default function AppEntry() {
     });
   }, [apiFetch, router, host]);
 
-  // This is the key: redirect via App Bridge if we need OAuth
   if (oauthUrl) return <TopRedirect url={oauthUrl} />;
 
   return <div style={{ padding: 16, fontFamily: "system-ui" }}>{msg}</div>;
