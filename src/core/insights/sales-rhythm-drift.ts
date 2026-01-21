@@ -144,10 +144,53 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
   }
 
   // Keep last 8 occurrences (≈ 8 weeks)
-  const baselineCounts = Array.from(baselineDays.entries())
+  // Baseline candidates: per local day counts up to same time-of-day
+const perDayCountsAll = new Map<string, number>();      // any weekday
+const perDayCountsSameWk = new Map<string, number>();   // same weekday only
+
+for (const o of ctx.orders) {
+  if (o.cancelled_at) continue;
+
+  const m = minutesSinceMidnight(new Date(o.created_at), tz);
+  if (m > nowLocalMin) continue;
+
+  const dk = localDateKey(o.created_at, tz);
+  perDayCountsAll.set(dk, (perDayCountsAll.get(dk) ?? 0) + 1);
+
+  if (sameLocalWeekday(o.created_at, tz, nowWeekday)) {
+    perDayCountsSameWk.set(dk, (perDayCountsSameWk.get(dk) ?? 0) + 1);
+  }
+}
+
+// helper to get last N day counts
+function lastNCounts(map: Map<string, number>, n: number) {
+  return Array.from(map.entries())
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .slice(0, 8)
+    .slice(0, n)
     .map(([, v]) => v);
+}
+
+const sameWk = lastNCounts(perDayCountsSameWk, 8);   // ~8 occurrences
+const anyDay14 = lastNCounts(perDayCountsAll, 14);   // last 14 days
+
+let baselineCounts: number[] = [];
+let comparedWindow = "";
+
+// Tier selection (prod-grade)
+if (sameWk.length >= 3) {
+  baselineCounts = sameWk;
+  comparedWindow = `Same weekday, last ${sameWk.length} occurrences, up to current time-of-day`;
+} else if (anyDay14.length >= 3) {
+  baselineCounts = anyDay14;
+  comparedWindow = `Any weekday, last ${anyDay14.length} days, up to current time-of-day (fallback)`;
+} else if (anyDay14.length >= 2) {
+  baselineCounts = anyDay14;
+  comparedWindow = `Any weekday, last ${anyDay14.length} days, up to current time-of-day (minimum fallback)`;
+} else {
+  return null; // truly insufficient
+}
+
+
 
   const sorted = [...baselineCounts].sort((a, b) => a - b);
   if (sorted.length < 3) return null;
@@ -217,7 +260,7 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
     evidence: "Price-change evaluation not enabled yet (no price history in v1).",
   });
 
-  const comparedWindow = `Same weekday, last ${sorted.length} occurrences, up to current time-of-day`;
+  //const comparedWindow = `Same weekday, last ${sorted.length} occurrences, up to current time-of-day`;
 
   const summary =
     `Orders so far today (${ordersTodayCount}) are below your normal range for this time ` +
