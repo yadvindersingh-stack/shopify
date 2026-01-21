@@ -199,15 +199,22 @@ if (sameWk.length >= 3) {
   const p50 = Math.round(quantile(sorted, 0.5));
   const p75 = Math.round(quantile(sorted, 0.75));
 
-  const expectedLow = p25;
+  const EARLY_STORE_MIN_EXPECTED = 3;
+
+const effectiveP25 = Math.max(p25, EARLY_STORE_MIN_EXPECTED);
+const effectiveP50 = Math.max(p50, EARLY_STORE_MIN_EXPECTED);
+  const expectedLow = effectiveP25;
   const expectedHigh = p75;
+  
+
 
   // Severity rules (your chosen Option A)
   let severity: "low" | "medium" | "high" = "low";
-  const highThreshold = Math.max(1, Math.floor(p25 / 2));
+  const highThreshold = Math.max(1, Math.floor(effectiveP25 / 2));
+
 
   if (ordersTodayCount < expectedLow) severity = "medium";
-  if ((ordersTodayCount === 0 && p50 >= 3) || ordersTodayCount < highThreshold) severity = "high";
+  if ((ordersTodayCount === 0 && effectiveP50 >= 3) || ordersTodayCount < highThreshold) severity = "high";
 
   if (severity === "low") return null;
 
