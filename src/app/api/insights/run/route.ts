@@ -1,155 +1,234 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { resolveShop } from "@/lib/shopify";
 import { shopifyGraphql } from "@/lib/shopify-admin";
 import { INSIGHT_CONTEXT_QUERY } from "@/lib/queries/insight-context";
-
+import { buildInsightContext } from "@/core/insights/build-context";
 import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
-import { normalizeSalesRhythmToInsight } from "@/core/insights/normalize";
-
-import { evaluateInventoryPressure } from "@/core/insights/inventory-pressure";
-import { normalizeInventoryPressureToInsight } from "@/core/insights/normalize-inventory";
-
-type InsightProduct = {
-  id: string;
-  title: string;
-  inventory_quantity: number;
-  price: number;
-};
+import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type DbInsight = {
+  shop_id: string;
+  type: string;
+  title: string;
+  description: string;
+  severity: "low" | "medium" | "high";
+  suggested_action: string | null;
+  data_snapshot: any;
+};
+
+function normalizeShop(shop?: string | null) {
+  return (shop || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "");
+}
+
+function toDbInsight(args: {
+  shopId: string;
+  type: string;
+  title: string;
+  description: string;
+  severity: "low" | "medium" | "high";
+  suggested_action?: string | null;
+  data_snapshot?: any;
+}): DbInsight {
+  return {
+    shop_id: args.shopId,
+    type: args.type,
+    title: args.title,
+    description: args.description,
+    severity: args.severity,
+    suggested_action: args.suggested_action ?? null,
+    data_snapshot: args.data_snapshot ?? null,
+  };
+}
+
+/**
+ * Deterministic “Inventory Pressure” insight:
+ * fires if ANY product totalInventory <= 2 (including 0).
+ */
+function evaluateInventoryPressure(ctx: any) {
+  const products: Array<any> =
+    (ctx?.products as any[]) ||
+    (ctx?.catalog?.products as any[]) ||
+    (ctx?.data?.products as any[]) ||
+    [];
+
+  // Normalize to { title, inv }
+  const normalized = products
+    .map((p) => ({
+      title: p?.title ?? p?.name ?? "Untitled product",
+      inv:
+        typeof p?.totalInventory === "number"
+          ? p.totalInventory
+          : typeof p?.inventory === "number"
+          ? p.inventory
+          : typeof p?.inv === "number"
+          ? p.inv
+          : 0,
+    }))
+    .sort((a, b) => a.inv - b.inv);
+
+  // Keep only low inventory items
+  const low = normalized.filter((p) => p.inv <= 2);
+
+  // Helpful server-side debug (you already saw this style in logs)
+  console.log(
+    "INV_DEBUG lowest inventories",
+    normalized.slice(0, 10).map((p) => ({ title: p.title, inv: p.inv }))
+  );
+
+  if (!low.length) return null;
+
+  const hasZero = low.some((p) => p.inv === 0);
+  const severity: "high" | "medium" = hasZero ? "high" : "medium";
+
+  const top = low.slice(0, 5);
+  const title = hasZero
+    ? "Products are out of stock"
+    : "Some products are running low";
+
+  const description =
+    "These items have very low inventory: " +
+    top.map((p) => `${p.title} (${p.inv})`).join(", ") +
+    (low.length > top.length ? ` (+${low.length - top.length} more)` : "") +
+    ".";
+
+  const suggested_action = hasZero
+    ? "Restock or set expectations (backorder/preorder). Consider pausing ads for OOS items."
+    : "Restock soon or adjust merchandising to avoid stockouts.";
+
+  return {
+    key: "inventory_pressure",
+    title,
+    severity,
+    summary: description,
+    suggested_action,
+    items: low,
+    evaluated_at: new Date().toISOString(),
+  };
+}
+
+/**
+ * 6-hour dedupe: don’t insert the same insight type more than once in last 6h.
+ */
+async function alreadyInsertedRecently(shopId: string, type: string) {
+  const since = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("insights")
+    .select("id")
+    .eq("shop_id", shopId)
+    .eq("type", type)
+    .gte("created_at", since)
+    .limit(1);
+
+  if (error) {
+    // If this check fails, don’t block inserts. Log and continue.
+    console.log("DEDUP_CHECK_FAILED", { type, message: error.message });
+    return false;
+  }
+  return Array.isArray(data) && data.length > 0;
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const shopRecord = await resolveShop(req);
-    const shopDomain = shopRecord.shop_domain;
-    const accessToken = shopRecord.access_token;
+    // 1) shop context
+    const shopFromToken = getShopFromRequestAuthHeader(req.headers.get("authorization"))?.toLowerCase();
+    const shopFromQuery = normalizeShop(req.nextUrl.searchParams.get("shop"));
+    const shop = shopFromToken || (shopFromQuery || null);
 
-    if (!accessToken) {
+    if (!shop) {
       return NextResponse.json(
-        { error: "Shop not installed or missing access token" },
-        { status: 403 }
+        {
+          error: "Missing shop context",
+          hint: "No valid Shopify session token (Authorization) and no shop query param.",
+        },
+        { status: 401 }
       );
     }
 
-    // Require setup (email) before scans
-    const { data: settings } = await supabase
-      .from("digest_settings")
-      .select("email")
-      .eq("shop_id", shopRecord.id)
+    // 2) token + shopId
+    const { data: shopRow, error: shopErr } = await supabase
+      .from("shops")
+      .select("id, access_token")
+      .eq("shop_domain", shop)
       .maybeSingle();
 
-    if (!settings?.email) {
-      return NextResponse.json(
-        { error: "Setup required", code: "setup_required" },
-        { status: 409 }
-      );
+    if (shopErr) {
+      return NextResponse.json({ error: "Failed to read shop token", details: shopErr.message }, { status: 500 });
     }
 
-    const now = new Date();
+    if (!shopRow?.access_token || !shopRow?.id) {
+      return NextResponse.json({ error: "Shop not installed or missing access token", shop }, { status: 403 });
+    }
 
-    // 8 weeks for drift + 14 days velocity (query can be wide; evaluator will window)
-    const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 56).toISOString();
-    const ordersQuery = `created_at:>=${since}`;
+    // 3) fetch context
+    const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+    const ordersQuery = `created_at:>=${sinceIso}`;
 
     const data = await shopifyGraphql({
-      shop: shopDomain,
-      accessToken,
+      shop,
+      accessToken: shopRow.access_token,
       query: INSIGHT_CONTEXT_QUERY,
       variables: { ordersQuery },
     });
 
-    const timezone = data?.shop?.ianaTimezone || shopRecord.timezone || "UTC";
+    const ctx = buildInsightContext(shop, new Date(), data);
 
-    const orders =
-      data?.orders?.edges?.map((e: any) => ({
-        id: e.node.id,
-        created_at: e.node.createdAt,
-        cancelled_at: e.node.cancelledAt ?? null,
-        total_price: Number(e.node.totalPriceSet?.shopMoney?.amount ?? 0),
-        line_items:
-          e.node.lineItems?.edges?.map((li: any) => ({
-            product_id: li.node.product?.id,
-            quantity: Number(li.node.quantity ?? 0),
-          })) ?? [],
-      })) ?? [];
+    // 4) evaluate insights
+    const results: any[] = [];
 
-    const products: InsightProduct[] =
-      data?.products?.edges?.map((e: any) => ({
-        id: e.node.id,
-        title: e.node.title,
-        inventory_quantity: Number(e.node.totalInventory ?? 0),
-        price: Number(e.node.priceRangeV2?.minVariantPrice?.amount ?? 0),
-      })) ?? [];
+    const drift = await evaluateSalesRhythmDrift(ctx);
+    if (drift) results.push(drift);
 
-    const keys: string[] = [];
-    let inserted = 0;
+    const inv = evaluateInventoryPressure(ctx);
+    if (inv) results.push(inv);
 
-    // 1) Sales Rhythm Drift
-    const drift = await evaluateSalesRhythmDrift({
-      shopTimezone: timezone,
-      now,
-      orders,
-      products,
-      analytics: { sessions_today_so_far: null, sessions_baseline_median: null },
-    } as any);
+    // 5) map -> DB inserts (only if issue exists) + 6h dedupe
+    const inserts: DbInsight[] = [];
 
-    if (drift) {
-      const normalized = normalizeSalesRhythmToInsight(drift);
-      const { error } = await supabase.from("insights").insert({
-        shop_id: shopRecord.id,
-        ...normalized,
+    for (const r of results) {
+      const type = r?.key || r?.type;
+      if (!type) continue;
+
+      const recently = await alreadyInsertedRecently(shopRow.id, type);
+      if (recently) continue;
+
+      const dbRow = toDbInsight({
+        shopId: shopRow.id,
+        type,
+        title: r?.title || "Insight",
+        description: r?.summary || r?.description || "",
+        severity: (r?.severity || "medium") as "low" | "medium" | "high",
+        suggested_action: r?.suggested_action || null,
+        data_snapshot: r,
       });
-      if (error) {
+
+      inserts.push(dbRow);
+    }
+
+    let inserted = 0;
+    if (inserts.length) {
+      const { error: insErr } = await supabase.from("insights").insert(inserts);
+      if (insErr) {
         return NextResponse.json(
-          { error: "Failed to persist drift insight", details: error.message },
+          { error: "Failed to store insights", details: insErr.message },
           { status: 500 }
         );
       }
-      inserted += 1;
-      keys.push("sales_rhythm_drift");
+      inserted = inserts.length;
     }
 
-    // 2) Inventory Pressure (velocity if possible)
-    if (inserted < 2) {
-const inv = await evaluateInventoryPressure({
-  shopTimezone: timezone,
-  now,
-  orders,
-  products,
-});
-console.log(
-  "INV_DEBUG lowest inventories",
-  products.slice(0, 10).map((p) => ({
-    title: p.title,
-    inv: p.inventory_quantity,
-  }))
-);
-
-
-      if (inv) {
-        const normalized = normalizeInventoryPressureToInsight(inv);
-        const { error } = await supabase.from("insights").insert({
-          shop_id: shopRecord.id,
-          ...normalized,
-        });
-        if (error) {
-          return NextResponse.json(
-            { error: "Failed to persist inventory insight", details: error.message },
-            { status: 500 }
-          );
-        }
-        inserted += 1;
-        keys.push("inventory_pressure");
-      }
-    }
-
-    return NextResponse.json({ inserted, keys });
+    return NextResponse.json({
+      inserted,
+      keys: inserts.map((i) => i.type),
+      insights: inserts, // useful for UI right away
+    });
   } catch (e: any) {
-    if (e instanceof Response) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: e.status || 401 });
-    }
     return NextResponse.json(
       { error: "Failed to run insights", details: e?.message || String(e) },
       { status: 500 }
