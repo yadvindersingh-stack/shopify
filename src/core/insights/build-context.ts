@@ -26,13 +26,16 @@ export function buildInsightContext(
     }
   }
 
-  const products = (data?.products?.edges || []).map((e: any) => ({
-    id: e.node.id,
-    title: e.node.title,
-    price: Number(e.node.priceRangeV2?.minVariantPrice?.amount || 0),
-    inventory_quantity: Number(e.node.totalInventory || 0),
-    historical_revenue: revenueByProduct[e.node.id] || 0,
-  }));
+  const variants = data?.productVariants?.edges ?? [];
+
+const products = variants.map((e: any) => ({
+  id: e.node.product.id,
+  title: e.node.product.title,
+  price: 0, // optional for this insight
+  inventory_quantity: Number(e.node.inventoryQuantity ?? 0),
+  historical_revenue: 0, // optional
+}));
+
 
   return {
     shopId,

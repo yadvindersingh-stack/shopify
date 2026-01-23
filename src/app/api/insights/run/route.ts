@@ -10,6 +10,13 @@ import { normalizeSalesRhythmToInsight } from "@/core/insights/normalize";
 import { evaluateInventoryPressure } from "@/core/insights/inventory-pressure";
 import { normalizeInventoryPressureToInsight } from "@/core/insights/normalize-inventory";
 
+type InsightProduct = {
+  id: string;
+  title: string;
+  inventory_quantity: number;
+  price: number;
+};
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -68,7 +75,7 @@ export async function POST(req: NextRequest) {
           })) ?? [],
       })) ?? [];
 
-    const products =
+    const products: InsightProduct[] =
       data?.products?.edges?.map((e: any) => ({
         id: e.node.id,
         title: e.node.title,
@@ -106,12 +113,20 @@ export async function POST(req: NextRequest) {
 
     // 2) Inventory Pressure (velocity if possible)
     if (inserted < 2) {
-      const inv = await evaluateInventoryPressure({
-        shopTimezone: timezone,
-        now,
-        orders,
-        products,
-      });
+const inv = await evaluateInventoryPressure({
+  shopTimezone: timezone,
+  now,
+  orders,
+  products,
+});
+console.log(
+  "INV_DEBUG lowest inventories",
+  products.slice(0, 10).map((p) => ({
+    title: p.title,
+    inv: p.inventory_quantity,
+  }))
+);
+
 
       if (inv) {
         const normalized = normalizeInventoryPressureToInsight(inv);
