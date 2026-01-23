@@ -64,34 +64,24 @@ function getTitle(p: any): string {
  * Inventory Pressure:
  * fires if ANY product inventory <= 2
  */
-function evaluateInventoryPressure(ctx: any) {
-  // ctx.products might be:
-  // - array already
-  // - object { edges: [...] }
-  // - nested in ctx.data/products etc
-  const raw =
-    ctx?.products ||
-    ctx?.data?.products ||
-    ctx?.catalog?.products ||
-    null;
+function evaluateInventoryPressureFromShopifyData(data: any) {
+  const raw = data?.products;
 
-  let products: any[] = [];
+  let nodes: any[] = [];
+  if (Array.isArray(raw?.edges)) nodes = raw.edges.map((e: any) => e?.node).filter(Boolean);
+  else if (Array.isArray(raw?.nodes)) nodes = raw.nodes.filter(Boolean);
+  else if (Array.isArray(raw)) nodes = raw;
 
-  if (Array.isArray(raw)) {
-    products = raw;
-  } else if (raw?.edges && Array.isArray(raw.edges)) {
-    products = raw.edges.map((e: any) => e?.node).filter(Boolean);
-  } else if (raw?.nodes && Array.isArray(raw.nodes)) {
-    products = raw.nodes;
-  }
-
-  const normalized = products
-    .map((p) => ({ title: getTitle(p), inv: getInventory(p), raw: p }))
+  const normalized = nodes
+    .map((p) => ({
+      title: p?.title || "Untitled product",
+      inv: typeof p?.totalInventory === "number" ? p.totalInventory : 0,
+      id: p?.id,
+    }))
     .sort((a, b) => a.inv - b.inv);
 
   const low = normalized.filter((p) => p.inv <= 2);
 
-  // Always log what we saw so we can stop guessing
   console.log("INV_DIAG", {
     productsCount: normalized.length,
     lowest10: normalized.slice(0, 10).map((p) => ({ title: p.title, inv: p.inv })),
@@ -104,27 +94,23 @@ function evaluateInventoryPressure(ctx: any) {
   const severity: "high" | "medium" = hasZero ? "high" : "medium";
 
   const top = low.slice(0, 5);
-  const title = hasZero ? "Products are out of stock" : "Some products are running low";
-  const description =
-    "These items have very low inventory: " +
-    top.map((p) => `${p.title} (${p.inv})`).join(", ") +
-    (low.length > top.length ? ` (+${low.length - top.length} more)` : "") +
-    ".";
-
-  const suggested_action = hasZero
-    ? "Restock or set expectations (backorder/preorder). Consider pausing ads for OOS items."
-    : "Restock soon or adjust merchandising to avoid stockouts.";
-
   return {
     key: "inventory_pressure",
-    title,
+    title: hasZero ? "Products are out of stock" : "Some products are running low",
     severity,
-    summary: description,
-    suggested_action,
-    items: low.map((x) => ({ title: x.title, inv: x.inv })),
+    summary:
+      "These items have very low inventory: " +
+      top.map((p) => `${p.title} (${p.inv})`).join(", ") +
+      (low.length > top.length ? ` (+${low.length - top.length} more)` : "") +
+      ".",
+    suggested_action: hasZero
+      ? "Restock or set expectations (preorder/backorder). Consider pausing ads for out-of-stock items."
+      : "Restock soon or adjust merchandising to avoid stockouts.",
+    items: low,
     evaluated_at: new Date().toISOString(),
   };
 }
+
 
 function toDbInsight(shopId: string, r: any): DbInsight {
   const type = r?.key || r?.type || "unknown";
@@ -194,13 +180,21 @@ export async function POST(req: NextRequest) {
       variables: { ordersQuery },
     });
 
-    const ctx = buildInsightContext(shop, new Date(), data);
+const ctx = buildInsightContext(shop, new Date(), data);
+
+// ✅ log the raw shape once (remove later)
+console.log("SHOPIFY_PRODUCTS_RAW", {
+  hasProducts: Boolean((data as any)?.products),
+  edgesLen: (data as any)?.products?.edges?.length ?? null,
+  nodesLen: (data as any)?.products?.nodes?.length ?? null,
+});
 
     const results: any[] = [];
     const drift = await evaluateSalesRhythmDrift(ctx);
     if (drift) results.push(drift);
 
-    const inv = evaluateInventoryPressure(ctx);
+   const inv = evaluateInventoryPressureFromShopifyData(data);
+
     if (inv) results.push(inv);
 
     const inserts: DbInsight[] = [];
