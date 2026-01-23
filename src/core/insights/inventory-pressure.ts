@@ -142,28 +142,54 @@ export async function evaluateInventoryPressure(
 
     // Sort worst first
     flagged = flagged.sort((a, b) => (a.days_of_supply ?? 9999) - (b.days_of_supply ?? 9999));
-  } else {
-    // Low-inventory-only fallback: flag top 25 products by lowest inventory
-    const candidates = [...ctx.products]
-      .sort((a, b) => (a.inventory_quantity ?? 0) - (b.inventory_quantity ?? 0))
-      .slice(0, 25);
+   } else {
+    // Low-inventory-only fallback (no velocity).
+    // Production stance: ANY stockout is worth alerting.
 
-    for (const p of candidates) {
-      const inv = p.inventory_quantity ?? 0;
-      if (inv <= HIGH_INV_ONLY) {
-        severity = "high";
-        flagged.push({ product_id: p.id, title: p.title, inventory: inv });
-      } else if (inv <= MED_INV_ONLY) {
-        if (severity !== "high") severity = "medium";
-        flagged.push({ product_id: p.id, title: p.title, inventory: inv });
-      }
+    const all = [...ctx.products].map(p => ({
+      id: p.id,
+      title: p.title,
+      inv: Number(p.inventory_quantity ?? 0),
+    }));
+
+    // Ignore products that don't track inventory? (optional)
+    // If you want to ignore "infinite" inventory products, you'd need a flag from Shopify.
+    // For now we treat missing inventory as 0, which is conservative.
+
+    const zeros = all.filter(p => p.inv === 0);
+    const veryLow = all.filter(p => p.inv > 0 && p.inv <= 2);
+    const low10 = all.filter(p => p.inv > 2 && p.inv <= 10);
+
+    // HIGH if any stockout
+    if (zeros.length > 0) {
+      severity = "high";
+      flagged = zeros
+        .sort((a, b) => a.inv - b.inv)
+        .slice(0, 10)
+        .map(p => ({ product_id: p.id, title: p.title, inventory: p.inv }));
     }
-
-    // To avoid noise, require at least 2 flagged in low-inventory-only mode
-    if (flagged.length < 2) return null;
+    // MEDIUM if any very-low
+    else if (veryLow.length > 0) {
+      severity = "medium";
+      flagged = veryLow
+        .sort((a, b) => a.inv - b.inv)
+        .slice(0, 10)
+        .map(p => ({ product_id: p.id, title: p.title, inventory: p.inv }));
+    }
+    // MEDIUM if many low-ish items
+    else if (low10.length >= 3) {
+      severity = "medium";
+      flagged = low10
+        .sort((a, b) => a.inv - b.inv)
+        .slice(0, 10)
+        .map(p => ({ product_id: p.id, title: p.title, inventory: p.inv }));
+    } else {
+      return null;
+    }
 
     flagged = flagged.sort((a, b) => (a.inventory ?? 9999) - (b.inventory ?? 9999));
   }
+
 
   const top3 = flagged.slice(0, 3);
 
