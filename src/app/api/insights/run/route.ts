@@ -124,7 +124,7 @@ const GUARD_HOURS: Record<string, number> = {
   sales_rhythm_drift: 6,
 
   // dead inventory is strategic; don’t repeat too often
-  dead_inventory: 24 * 7, // 7 days
+  dead_inventory: 0, // 7 days
 };
 
 async function alreadyInsertedWithin(shopId: string, type: string, hours: number) {
@@ -269,23 +269,31 @@ function evaluateDeadInventoryFromShopifyData(
   const WINDOW_DAYS = opts?.windowDays ?? 30;
   const MIN_STOCK = opts?.minStock ?? 10;
 
+  // We’ll also add a wider window to classify "slow_mover"
+  const SLOW_MOVER_DAYS = 90;
+
   const now = new Date();
-  const cutoffMs = now.getTime() - WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const cutoff30Ms = now.getTime() - WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const cutoff90Ms = now.getTime() - SLOW_MOVER_DAYS * 24 * 60 * 60 * 1000;
 
   // Products
   const pEdges = data?.products?.edges ?? [];
   const products = Array.isArray(pEdges) ? pEdges.map((e: any) => e?.node).filter(Boolean) : [];
 
-  // Orders (optional for “last sold”, but dead inventory only needs “no sale in window”)
+  // Orders
   const oEdges = data?.orders?.edges ?? [];
   const orders = Array.isArray(oEdges) ? oEdges.map((e: any) => e?.node).filter(Boolean) : [];
 
-  // Build last sale per productId (Shopify GID)
+  // productId -> most recent sale timestamp
   const lastSaleMsByProduct = new Map<string, number>();
+  // productId -> any sale ever?
+  const everSoldSet = new Set<string>();
 
   for (const o of orders) {
     if (o?.cancelledAt) continue;
-    const createdMs = o?.createdAt ? new Date(o.createdAt).getTime() : NaN;
+
+    const createdAt = o?.createdAt;
+    const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
     if (!Number.isFinite(createdMs)) continue;
 
     const liEdges = o?.lineItems?.edges ?? [];
@@ -294,12 +302,14 @@ function evaluateDeadInventoryFromShopifyData(
       const pid = li?.product?.id;
       if (!pid) continue;
 
+      everSoldSet.add(pid);
+
       const prev = lastSaleMsByProduct.get(pid);
       if (!prev || createdMs > prev) lastSaleMsByProduct.set(pid, createdMs);
     }
   }
 
-  // Diagnose inventory fields
+  // Inventory + price helpers
   const invOf = (p: any) => {
     const v =
       p?.totalInventory ??
@@ -311,11 +321,28 @@ function evaluateDeadInventoryFromShopifyData(
     return Number.isFinite(n) ? n : 0;
   };
 
+  const priceOf = (p: any) => {
+    // priceRangeV2.minVariantPrice.amount is a string number
+    const amt =
+      p?.priceRangeV2?.minVariantPrice?.amount ??
+      p?.priceRange?.minVariantPrice?.amount ??
+      p?.price ??
+      0;
+    const n = Number(amt);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  type Bucket = "never_sold" | "stopped_selling" | "slow_mover";
+
   const deadItems: Array<{
     product_id: string;
     title: string;
     inventory: number;
-    days_since_last_order: number | null;
+    price: number;
+    cash_trapped_estimate: number;
+    bucket: Bucket;
+    last_sale_at: string | null;
+    days_since_last_sale: number | null;
   }> = [];
 
   for (const p of products) {
@@ -324,64 +351,133 @@ function evaluateDeadInventoryFromShopifyData(
 
     const title = String(p?.title ?? "Untitled product");
     const inventory = invOf(p);
+    const price = priceOf(p);
 
-    // Must have high stock
+    // Must have meaningful stock
     if (inventory < MIN_STOCK) continue;
 
-    // Filter gift cards (heuristic)
+    // Skip gift cards (noise)
     if (title.toLowerCase().includes("gift card")) continue;
 
-    // If status exists and is not ACTIVE, skip
+    // If status exists and not ACTIVE, skip
     const status = (p?.status ?? "").toString().toUpperCase();
     if (status && status !== "ACTIVE") continue;
 
-    // Dead condition: no sale in window (or never sold)
     const lastSaleMs = lastSaleMsByProduct.get(productId);
-    const isDead = !lastSaleMs || lastSaleMs < cutoffMs;
-    if (!isDead) continue;
+    const everSold = everSoldSet.has(productId);
 
+    // Determine bucket
+    let bucket: Bucket | null = null;
+
+    if (!everSold) {
+      // Never sold at all → dead inventory candidate
+      bucket = "never_sold";
+    } else if (lastSaleMs && lastSaleMs < cutoff30Ms) {
+      // Sold before, but not in last 30d
+      // If last sale within 90d → slow mover, otherwise stopped selling
+      bucket = lastSaleMs >= cutoff90Ms ? "slow_mover" : "stopped_selling";
+    } else {
+      // Sold recently (within 30d) → not dead
+      bucket = null;
+    }
+
+    if (!bucket) continue;
+
+    const lastSaleAt = lastSaleMs ? new Date(lastSaleMs).toISOString() : null;
     const daysSince =
       lastSaleMs ? Math.floor((now.getTime() - lastSaleMs) / (24 * 60 * 60 * 1000)) : null;
+
+    const cashTrapped = Math.round((inventory * price) * 100) / 100;
 
     deadItems.push({
       product_id: productId,
       title,
       inventory,
-      days_since_last_order: daysSince,
+      price,
+      cash_trapped_estimate: cashTrapped,
+      bucket,
+      last_sale_at: lastSaleAt,
+      days_since_last_sale: daysSince,
     });
   }
 
-  console.log("DEAD_INV_DIAG", {
+  // Diagnostics (small + readable)
+  const bucketCounts = deadItems.reduce(
+    (acc, x) => {
+      acc[x.bucket] = (acc[x.bucket] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>
+  );
+
+  console.log("DEAD_INV_V2_DIAG", {
     productsCount: products.length,
     ordersCount: orders.length,
     minStock: MIN_STOCK,
     deadCount: deadItems.length,
-    sample: deadItems.slice(0, 5).map((x) => ({ title: x.title, inv: x.inventory, days: x.days_since_last_order })),
+    buckets: bucketCounts,
+    topByCash: deadItems
+      .slice()
+      .sort((a, b) => b.cash_trapped_estimate - a.cash_trapped_estimate)
+      .slice(0, 5)
+      .map((x) => ({ title: x.title, bucket: x.bucket, cash: x.cash_trapped_estimate })),
   });
 
   if (deadItems.length === 0) return null;
 
-  deadItems.sort((a, b) => b.inventory - a.inventory);
+  // Rank by “money trapped”
+  deadItems.sort((a, b) => b.cash_trapped_estimate - a.cash_trapped_estimate);
 
   const deadCount = deadItems.length;
+
+  // Severity based on trapped value + count
+  const totalTrapped = deadItems.reduce((sum, x) => sum + x.cash_trapped_estimate, 0);
   const severity: "high" | "medium" | "low" =
-    deadCount >= 5 ? "high" : deadCount >= 2 ? "medium" : "low";
+    totalTrapped >= 500 ? "high" : deadCount >= 3 ? "medium" : "low";
 
   const top = deadItems.slice(0, 8);
 
+  // Action text depends on dominant bucket
+  const dominantBucket =
+    (bucketCounts["never_sold"] ?? 0) >= (bucketCounts["stopped_selling"] ?? 0) &&
+    (bucketCounts["never_sold"] ?? 0) >= (bucketCounts["slow_mover"] ?? 0)
+      ? "never_sold"
+      : (bucketCounts["stopped_selling"] ?? 0) >= (bucketCounts["slow_mover"] ?? 0)
+      ? "stopped_selling"
+      : "slow_mover";
+
+  const title =
+    severity === "high" ? "Cash is trapped in non-moving inventory" : "Some inventory isn’t moving";
+
+  const description =
+    `We found ${deadCount} products with stock (≥${MIN_STOCK}) that haven’t sold recently. ` +
+    `Estimated cash tied up (price × stock): $${Math.round(totalTrapped)}. ` +
+    `Top: ${top.map((x) => `${x.title} ($${x.cash_trapped_estimate})`).join(", ")}.`;
+
+  const suggested_action =
+    dominantBucket === "never_sold"
+      ? "These items have never sold. Hide them from main collections, test a small discount or bundle with a bestseller, and fix listing basics (title/images) before spending on ads."
+      : dominantBucket === "stopped_selling"
+      ? "These items used to sell but stopped. Check recent price changes, collection placement, and whether demand shifted. Run a short clearance/bundle test and reduce exposure if they don’t recover."
+      : "These items are slow movers. Create a bundle/upsell placement, run a small promo, and avoid reordering until sell-through improves.";
+
   return {
     key: "dead_inventory",
-    title: severity === "high" ? "Cash tied up in dead inventory" : "Some products aren’t selling",
+    title,
     severity,
-    summary:
-      `You have ${deadCount} products with stock (≥${MIN_STOCK}) and no sales in the last ${WINDOW_DAYS} days. ` +
-      `Top: ${top.map((x) => `${x.title} (inv ${x.inventory})`).join(", ")}.`,
-    suggested_action:
-      "Discount or bundle these items, reduce visibility in collections, and archive true non-performers to free up cash.",
-    items: top,
+    summary: description,
+    suggested_action,
     evaluated_at: now.toISOString(),
-    window_days: WINDOW_DAYS,
-    min_stock_threshold: MIN_STOCK,
-    dead_count: deadCount,
+    metrics: {
+      window_days: WINDOW_DAYS,
+      slow_mover_days: SLOW_MOVER_DAYS,
+      min_stock_threshold: MIN_STOCK,
+      dead_count: deadCount,
+      buckets: bucketCounts,
+      total_cash_trapped_estimate: Math.round(totalTrapped * 100) / 100,
+    },
+    // Keep “items” for easy UI rendering
+    items: top,
   };
 }
+
