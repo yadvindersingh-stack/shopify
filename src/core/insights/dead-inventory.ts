@@ -90,14 +90,7 @@ export function evaluateDeadInventory(ctx: any, opts?: { windowDays?: number; mi
     if (status && status !== "ACTIVE") continue;
 
     // Optional: ignore "too new" products if createdAt exists
-    const createdAtRaw = p?.createdAt ?? p?.created_at ?? null;
-    if (createdAtRaw) {
-      const createdMs = new Date(createdAtRaw).getTime();
-      if (Number.isFinite(createdMs) && createdMs > cutoffMs) {
-        // created within window → don't call it "dead" yet
-        continue;
-      }
-    }
+
 
     const lastSaleMs = lastSaleMsByProduct.get(productId);
     const isDead = !lastSaleMs || lastSaleMs < cutoffMs;
