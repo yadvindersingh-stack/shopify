@@ -208,8 +208,11 @@ export async function POST(req: NextRequest) {
     const invPressure = evaluateInventoryPressureFromShopifyData(data);
     if (invPressure) candidates.push(invPressure);
 
-    const dead = evaluateDeadInventory(ctx, { windowDays: 30, minStock: 10 });
-    if (dead) candidates.push(dead);
+  const dead = evaluateDeadInventoryFromShopifyData(data, {
+  windowDays: 30,
+  minStock: 10,
+});
+if (dead) candidates.push(dead);
 
     const velocity = evaluateInventoryVelocityRisk(ctx);
     if (velocity) candidates.push(velocity);
@@ -258,4 +261,127 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
+}
+function evaluateDeadInventoryFromShopifyData(
+  data: any,
+  opts?: { windowDays?: number; minStock?: number }
+) {
+  const WINDOW_DAYS = opts?.windowDays ?? 30;
+  const MIN_STOCK = opts?.minStock ?? 10;
+
+  const now = new Date();
+  const cutoffMs = now.getTime() - WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+  // Products
+  const pEdges = data?.products?.edges ?? [];
+  const products = Array.isArray(pEdges) ? pEdges.map((e: any) => e?.node).filter(Boolean) : [];
+
+  // Orders (optional for “last sold”, but dead inventory only needs “no sale in window”)
+  const oEdges = data?.orders?.edges ?? [];
+  const orders = Array.isArray(oEdges) ? oEdges.map((e: any) => e?.node).filter(Boolean) : [];
+
+  // Build last sale per productId (Shopify GID)
+  const lastSaleMsByProduct = new Map<string, number>();
+
+  for (const o of orders) {
+    if (o?.cancelledAt) continue;
+    const createdMs = o?.createdAt ? new Date(o.createdAt).getTime() : NaN;
+    if (!Number.isFinite(createdMs)) continue;
+
+    const liEdges = o?.lineItems?.edges ?? [];
+    for (const liE of liEdges) {
+      const li = liE?.node;
+      const pid = li?.product?.id;
+      if (!pid) continue;
+
+      const prev = lastSaleMsByProduct.get(pid);
+      if (!prev || createdMs > prev) lastSaleMsByProduct.set(pid, createdMs);
+    }
+  }
+
+  // Diagnose inventory fields
+  const invOf = (p: any) => {
+    const v =
+      p?.totalInventory ??
+      p?.inventory_quantity ??
+      p?.inventoryQuantity ??
+      p?.inventory ??
+      0;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const deadItems: Array<{
+    product_id: string;
+    title: string;
+    inventory: number;
+    days_since_last_order: number | null;
+  }> = [];
+
+  for (const p of products) {
+    const productId = p?.id;
+    if (!productId) continue;
+
+    const title = String(p?.title ?? "Untitled product");
+    const inventory = invOf(p);
+
+    // Must have high stock
+    if (inventory < MIN_STOCK) continue;
+
+    // Filter gift cards (heuristic)
+    if (title.toLowerCase().includes("gift card")) continue;
+
+    // If status exists and is not ACTIVE, skip
+    const status = (p?.status ?? "").toString().toUpperCase();
+    if (status && status !== "ACTIVE") continue;
+
+    // Dead condition: no sale in window (or never sold)
+    const lastSaleMs = lastSaleMsByProduct.get(productId);
+    const isDead = !lastSaleMs || lastSaleMs < cutoffMs;
+    if (!isDead) continue;
+
+    const daysSince =
+      lastSaleMs ? Math.floor((now.getTime() - lastSaleMs) / (24 * 60 * 60 * 1000)) : null;
+
+    deadItems.push({
+      product_id: productId,
+      title,
+      inventory,
+      days_since_last_order: daysSince,
+    });
+  }
+
+  console.log("DEAD_INV_DIAG", {
+    productsCount: products.length,
+    ordersCount: orders.length,
+    minStock: MIN_STOCK,
+    deadCount: deadItems.length,
+    sample: deadItems.slice(0, 5).map((x) => ({ title: x.title, inv: x.inventory, days: x.days_since_last_order })),
+  });
+
+  if (deadItems.length === 0) return null;
+
+  deadItems.sort((a, b) => b.inventory - a.inventory);
+
+  const deadCount = deadItems.length;
+  const severity: "high" | "medium" | "low" =
+    deadCount >= 5 ? "high" : deadCount >= 2 ? "medium" : "low";
+
+  const top = deadItems.slice(0, 8);
+
+  return {
+    key: "dead_inventory",
+    title: severity === "high" ? "Cash tied up in dead inventory" : "Some products aren’t selling",
+    severity,
+    summary:
+      `You have ${deadCount} products with stock (≥${MIN_STOCK}) and no sales in the last ${WINDOW_DAYS} days. ` +
+      `Top: ${top.map((x) => `${x.title} (inv ${x.inventory})`).join(", ")}.`,
+    suggested_action:
+      "Discount or bundle these items, reduce visibility in collections, and archive true non-performers to free up cash.",
+    items: top,
+    evaluated_at: now.toISOString(),
+    window_days: WINDOW_DAYS,
+    min_stock_threshold: MIN_STOCK,
+    dead_count: deadCount,
+  };
 }
