@@ -6,6 +6,7 @@ import { buildInsightContext } from "@/core/insights/build-context";
 import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
 import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
 import { evaluateInventoryVelocityRisk } from "@/core/insights/inventory-velocity-risk";
+import { evaluateDeadInventory } from "@/core/insights/dead-inventory";
 
 
 export const runtime = "nodejs";
@@ -183,6 +184,43 @@ export async function POST(req: NextRequest) {
     });
 
 const ctx = buildInsightContext(shop, new Date(), data);
+
+// ---- Dead Inventory v1 ----
+const dead = evaluateDeadInventory(ctx, { windowDays: 30, minStock: 10 });
+
+if (dead) {
+  // 7-day guard per shop+type so we don’t spam
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data: recentDead } = await supabase
+    .from("insights")
+    .select("id")
+    .eq("shop_id", shopRow.id)
+    .eq("type", dead.type)
+    .gte("created_at", sevenDaysAgo)
+    .maybeSingle();
+
+  if (!recentDead?.id) {
+    const { error: insertErr } = await supabase.from("insights").insert({
+      shop_id: shopRow.id,
+      type: dead.type,
+      title: dead.title,
+      description: dead.description,
+      severity: dead.severity,
+      suggested_action: dead.suggested_action,
+      data_snapshot: dead.data_snapshot,
+    });
+
+    if (insertErr) {
+      // don’t crash the whole scan, return useful error
+      return NextResponse.json(
+        { error: "Failed to insert dead_inventory", details: insertErr.message },
+        { status: 500 }
+      );
+    }
+  }
+}
+
 
 // ✅ log the raw shape once (remove later)
 console.log("SHOPIFY_PRODUCTS_RAW", {
