@@ -8,16 +8,17 @@ import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
 import { evaluateInventoryVelocityRisk } from "@/core/insights/inventory-velocity-risk";
 import { evaluateDeadInventory } from "@/core/insights/dead-inventory";
 
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+type Severity = "low" | "medium" | "high";
 
 type DbInsight = {
   shop_id: string;
   type: string;
   title: string;
   description: string;
-  severity: "low" | "medium" | "high";
+  severity: Severity;
   suggested_action: string | null;
   data_snapshot: any;
 };
@@ -30,41 +31,8 @@ function normalizeShop(shop?: string | null) {
     .replace(/\/.*$/, "");
 }
 
-async function alreadyInsertedRecently(shopId: string, type: string) {
-  const since = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
-  const { data, error } = await supabase
-    .from("insights")
-    .select("id")
-    .eq("shop_id", shopId)
-    .eq("type", type)
-    .gte("created_at", since)
-    .limit(1);
-
-  if (error) return false;
-  return Array.isArray(data) && data.length > 0;
-}
-
-function getInventory(p: any): number {
-  const candidates = [
-    p?.totalInventory,
-    p?.inventory_quantity,
-    p?.inventoryQuantity,
-    p?.inventory,
-    p?.inv,
-  ];
-  for (const v of candidates) {
-    if (typeof v === "number") return v;
-    if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) return Number(v);
-  }
-  return 0;
-}
-
-function getTitle(p: any): string {
-  return p?.title || p?.name || p?.handle || "Untitled product";
-}
-
 /**
- * Inventory Pressure:
+ * Inventory Pressure (simple deterministic rule)
  * fires if ANY product inventory <= 2
  */
 function evaluateInventoryPressureFromShopifyData(data: any) {
@@ -75,16 +43,30 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
   else if (Array.isArray(raw?.nodes)) nodes = raw.nodes.filter(Boolean);
   else if (Array.isArray(raw)) nodes = raw;
 
+  // Try multiple inventory fields (Shopify can vary based on mapping)
+  const invOf = (p: any) => {
+    const v =
+      p?.totalInventory ??
+      p?.inventory_quantity ??
+      p?.inventoryQuantity ??
+      p?.inventory ??
+      p?.inv ??
+      0;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
   const normalized = nodes
     .map((p) => ({
       title: p?.title || "Untitled product",
-      inv: typeof p?.totalInventory === "number" ? p.totalInventory : 0,
+      inv: invOf(p),
       id: p?.id,
     }))
     .sort((a, b) => a.inv - b.inv);
 
   const low = normalized.filter((p) => p.inv <= 2);
 
+  // Keep the log small & useful (remove later)
   console.log("INV_DIAG", {
     productsCount: normalized.length,
     lowest10: normalized.slice(0, 10).map((p) => ({ title: p.title, inv: p.inv })),
@@ -114,7 +96,6 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
   };
 }
 
-
 function toDbInsight(shopId: string, r: any): DbInsight {
   const type = r?.key || r?.type || "unknown";
   return {
@@ -122,10 +103,42 @@ function toDbInsight(shopId: string, r: any): DbInsight {
     type,
     title: r?.title || "Insight",
     description: r?.summary || r?.description || "",
-    severity: (r?.severity || "medium") as "low" | "medium" | "high",
+    severity: (r?.severity || "medium") as Severity,
     suggested_action: r?.suggested_action || null,
     data_snapshot: r,
   };
+}
+
+/**
+ * Per-insight “spam guards”
+ * Keep it simple & explicit.
+ */
+const GUARD_HOURS: Record<string, number> = {
+  // deterministic inventory is noisy if inserted too often
+  inventory_pressure: 6,
+
+  // your velocity insight should not spam
+  inventory_velocity_risk: 6,
+
+  // drift is time-based; 6h guard is fine for MVP
+  sales_rhythm_drift: 6,
+
+  // dead inventory is strategic; don’t repeat too often
+  dead_inventory: 24 * 7, // 7 days
+};
+
+async function alreadyInsertedWithin(shopId: string, type: string, hours: number) {
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("insights")
+    .select("id")
+    .eq("shop_id", shopId)
+    .eq("type", type)
+    .gte("created_at", since)
+    .limit(1);
+
+  if (error) return false; // fail open (don’t block)
+  return Array.isArray(data) && data.length > 0;
 }
 
 export async function POST(req: NextRequest) {
@@ -154,7 +167,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Shop not installed or missing access token", shop }, { status: 403 });
     }
 
-    // ✅ Force insert to prove DB writes work (use /api/insights/run?force=1)
+    // Force insert path to validate DB writes quickly
     if (force) {
       const row: DbInsight = {
         shop_id: shopRow.id,
@@ -173,6 +186,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ inserted: 1, keys: ["force_test"], forced: true });
     }
 
+    // Fetch context once
     const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
     const ordersQuery = `created_at:>=${sinceIso}`;
 
@@ -183,119 +197,61 @@ export async function POST(req: NextRequest) {
       variables: { ordersQuery },
     });
 
-const ctx = buildInsightContext(shop, new Date(), data);
+    const ctx = buildInsightContext(shop, new Date(), data);
 
-// ---- Dead Inventory v1 ----
-const dead = evaluateDeadInventory(ctx, { windowDays: 30, minStock: 10 });
+    // ---- Evaluate (pure) ----
+    const candidates: any[] = [];
 
-if (dead) {
-  // 7-day guard per shop+type so we don’t spam
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-  const { data: recentDead } = await supabase
-    .from("insights")
-    .select("id")
-    .eq("shop_id", shopRow.id)
-    .eq("type", dead.type)
-    .gte("created_at", sevenDaysAgo)
-    .maybeSingle();
-
-  if (!recentDead?.id) {
-    const { error: insertErr } = await supabase.from("insights").insert({
-      shop_id: shopRow.id,
-      type: dead.type,
-      title: dead.title,
-      description: dead.description,
-      severity: dead.severity,
-      suggested_action: dead.suggested_action,
-      data_snapshot: dead.data_snapshot,
-    });
-
-    if (insertErr) {
-      // don’t crash the whole scan, return useful error
-      return NextResponse.json(
-        { error: "Failed to insert dead_inventory", details: insertErr.message },
-        { status: 500 }
-      );
-    }
-  }
-}
-
-
-// ✅ log the raw shape once (remove later)
-console.log("SHOPIFY_PRODUCTS_RAW", {
-  hasProducts: Boolean((data as any)?.products),
-  edgesLen: (data as any)?.products?.edges?.length ?? null,
-  nodesLen: (data as any)?.products?.nodes?.length ?? null,
-});
-
-    const results: any[] = [];
     const drift = await evaluateSalesRhythmDrift(ctx);
-    if (drift) results.push(drift);
+    if (drift) candidates.push(drift);
 
-   const inv = evaluateInventoryPressureFromShopifyData(data);
+    const invPressure = evaluateInventoryPressureFromShopifyData(data);
+    if (invPressure) candidates.push(invPressure);
 
-    if (inv) results.push(inv);
+    const dead = evaluateDeadInventory(ctx, { windowDays: 30, minStock: 10 });
+    if (dead) candidates.push(dead);
 
+    const velocity = evaluateInventoryVelocityRisk(ctx);
+    if (velocity) candidates.push(velocity);
+
+    // ---- Persist (guarded) ----
     const inserts: DbInsight[] = [];
-    for (const r of results) {
-      const type = r?.key || r?.type;
+    const skipped: Array<{ type: string; reason: string }> = [];
+
+    for (const c of candidates) {
+      const type = c?.key || c?.type;
       if (!type) continue;
 
-      const recently = await alreadyInsertedRecently(shopRow.id, type);
-      if (recently) continue;
+      const hours = GUARD_HOURS[type] ?? 6;
+      const recently = await alreadyInsertedWithin(shopRow.id, type, hours);
 
-      inserts.push(toDbInsight(shopRow.id, r));
+      if (recently) {
+        skipped.push({ type, reason: `guard_${hours}h` });
+        continue;
+      }
+
+      inserts.push(toDbInsight(shopRow.id, c));
     }
 
-    if (!inserts.length) {
-      return NextResponse.json({
-        inserted: 0,
-        keys: [],
-        diag: { evaluated: results.map((r) => r?.key || r?.type).filter(Boolean) },
-      });
-    }
-    const insight = evaluateInventoryVelocityRisk(ctx);
-if (!insight) {
-  return NextResponse.json({ inserted: 0, keys: [] });
-}
-
-// optional: 6-hour guard (recommended)
-const sixHoursAgo = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
-const { data: recent } = await supabase
-  .from("insights")
-  .select("id")
-  .eq("shop_id", shopRow.id)
-  .eq("type", insight.type)
-  .gte("created_at", sixHoursAgo)
-  .maybeSingle();
-
-if (recent?.id) {
-  return NextResponse.json({ inserted: 0, keys: [insight.type], skipped: "guard_6h" });
-}
-
-const { error } = await supabase.from("insights").insert({
-  shop_id: shopRow.id,
-  type: insight.type,
-  title: insight.title,
-  description: insight.description,
-  severity: insight.severity,
-  suggested_action: insight.suggested_action,
-  data_snapshot: insight.data_snapshot,
-});
-
-if (error) {
-  return NextResponse.json({ error: error.message }, { status: 500 });
-}
-
-//return NextResponse.json({ inserted: 1, keys: [insight.type] });
-
-    const { error: insErr } = await supabase.from("insights").insert(inserts);
-    if (insErr) {
-      return NextResponse.json({ error: "Insert failed", details: insErr.message }, { status: 500 });
+    if (inserts.length > 0) {
+      const { error: insErr } = await supabase.from("insights").insert(inserts);
+      if (insErr) {
+        return NextResponse.json({ error: "Insert failed", details: insErr.message }, { status: 500 });
+      }
     }
 
-    return NextResponse.json({ inserted: inserts.length, keys: inserts.map((i) => i.type) });
+    return NextResponse.json({
+      inserted: inserts.length,
+      keys: inserts.map((i) => i.type),
+      evaluated: candidates.map((c) => c?.key || c?.type).filter(Boolean),
+      skipped,
+      // Light diagnostics that don’t create log chaos:
+      diag: {
+        products_present: Boolean((data as any)?.products),
+        products_edges: (data as any)?.products?.edges?.length ?? null,
+        orders_edges: (data as any)?.orders?.edges?.length ?? null,
+      },
+    });
   } catch (e: any) {
     return NextResponse.json(
       { error: "Failed to run insights", details: e?.message || String(e) },
