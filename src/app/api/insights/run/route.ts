@@ -5,6 +5,8 @@ import { INSIGHT_CONTEXT_QUERY } from "@/lib/queries/insight-context";
 import { buildInsightContext } from "@/core/insights/build-context";
 import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
 import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
+import { evaluateInventoryVelocityRisk } from "@/core/insights/inventory-velocity-risk";
+
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -215,6 +217,40 @@ console.log("SHOPIFY_PRODUCTS_RAW", {
         diag: { evaluated: results.map((r) => r?.key || r?.type).filter(Boolean) },
       });
     }
+    const insight = evaluateInventoryVelocityRisk(ctx);
+if (!insight) {
+  return NextResponse.json({ inserted: 0, keys: [] });
+}
+
+// optional: 6-hour guard (recommended)
+const sixHoursAgo = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+const { data: recent } = await supabase
+  .from("insights")
+  .select("id")
+  .eq("shop_id", shopRow.id)
+  .eq("type", insight.type)
+  .gte("created_at", sixHoursAgo)
+  .maybeSingle();
+
+if (recent?.id) {
+  return NextResponse.json({ inserted: 0, keys: [insight.type], skipped: "guard_6h" });
+}
+
+const { error } = await supabase.from("insights").insert({
+  shop_id: shopRow.id,
+  type: insight.type,
+  title: insight.title,
+  description: insight.description,
+  severity: insight.severity,
+  suggested_action: insight.suggested_action,
+  data_snapshot: insight.data_snapshot,
+});
+
+if (error) {
+  return NextResponse.json({ error: error.message }, { status: 500 });
+}
+
+//return NextResponse.json({ inserted: 1, keys: [insight.type] });
 
     const { error: insErr } = await supabase.from("insights").insert(inserts);
     if (insErr) {
