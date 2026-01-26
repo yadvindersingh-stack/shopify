@@ -1,131 +1,316 @@
-type InsightRow = {
-  type: string;
+// src/core/insights/inventory-velocity-risk.ts
+
+export type Severity = "high" | "medium" | "low";
+export type Confidence = "high" | "medium" | "low";
+
+export type InventoryVelocityRiskItem = {
+  product_id: string;
   title: string;
-  description: string;
-  severity: "high" | "medium" | "low";
-  suggested_action: string;
-  data_snapshot: Record<string, any>;
+  inventory: number;
+  price: number;
+  window_days: number;
+  units_sold_in_window: number;
+  daily_units: number;
+  days_to_stockout: number;
+  confidence: Confidence;
+  revenue_at_risk_estimate_7d: number; // proxy: min(inventory, daily_units*7)*price
+  last_sale_at: string | null;
 };
 
-export function evaluateInventoryVelocityRisk(ctx: any): InsightRow | null {
-  const now = new Date(ctx.now ?? Date.now());
-  const products = ctx.products ?? [];
-  const orders = ctx.orders ?? [];
+export type InventoryVelocityRiskInsight = {
+  key: "inventory_velocity_risk";
+  title: string;
+  severity: Severity;
+  summary: string;
+  suggested_action: string;
+  items: InventoryVelocityRiskItem[];
+  metrics: {
+    evaluated_window_days: number;
+    candidates_considered: number;
+    items_flagged: number;
+  };
+  evaluated_at: string;
+};
 
-  // Build a map: productId -> { units, ordersCount, firstSeenAt }
-  const stats = new Map<
-    string,
-    { units: number; ordersCount: number; firstSeenAt: number }
-  >();
+// ---- Adapters (edit these if your ctx shape differs) ----
+type CtxOrder = any;
+type CtxProduct = any;
+
+function getOrderCreatedAt(o: CtxOrder): number | null {
+  const raw = o?.created_at ?? o?.createdAt ?? o?.created;
+  if (!raw) return null;
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isCancelled(o: CtxOrder): boolean {
+  return Boolean(o?.cancelled_at ?? o?.cancelledAt);
+}
+
+/**
+ * Returns array of {product_id, quantity}.
+ * Supports a few common shapes:
+ * - o.line_items: [{product_id, quantity}]
+ * - o.lineItems.edges[].node.product.id + quantity
+ * - o.lineItems: [{product:{id}, quantity}]
+ */
+function extractLineItems(o: CtxOrder): Array<{ product_id: string; quantity: number }> {
+  // Shape A: line_items (REST-like)
+  const liA = o?.line_items;
+  if (Array.isArray(liA)) {
+    return liA
+      .map((x: any) => ({
+        product_id: String(x?.product_id ?? x?.product?.id ?? ""),
+        quantity: Number(x?.quantity ?? 0),
+      }))
+      .filter((x: any) => x.product_id && Number.isFinite(x.quantity) && x.quantity > 0);
+  }
+
+  // Shape B: lineItems.edges.node (GraphQL-like)
+  const edges = o?.lineItems?.edges;
+  if (Array.isArray(edges)) {
+    return edges
+      .map((e: any) => e?.node)
+      .filter(Boolean)
+      .map((n: any) => ({
+        product_id: String(n?.product?.id ?? ""),
+        quantity: Number(n?.quantity ?? 0),
+      }))
+      .filter((x: any) => x.product_id && Number.isFinite(x.quantity) && x.quantity > 0);
+  }
+
+  // Shape C: lineItems flat
+  const liC = o?.lineItems;
+  if (Array.isArray(liC)) {
+    return liC
+      .map((n: any) => ({
+        product_id: String(n?.product?.id ?? n?.product_id ?? ""),
+        quantity: Number(n?.quantity ?? 0),
+      }))
+      .filter((x: any) => x.product_id && Number.isFinite(x.quantity) && x.quantity > 0);
+  }
+
+  return [];
+}
+
+function getProductId(p: CtxProduct): string {
+  return String(p?.id ?? p?.product_id ?? "");
+}
+
+function getProductTitle(p: CtxProduct): string {
+  return String(p?.title ?? "Untitled product");
+}
+
+function getProductInv(p: CtxProduct): number {
+  const v =
+    p?.inventory_quantity ??
+    p?.totalInventory ??
+    p?.total_inventory ??
+    p?.inventory ??
+    0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getProductPrice(p: CtxProduct): number {
+  const v =
+    p?.price ??
+    p?.price_amount ??
+    p?.priceRangeV2?.minVariantPrice?.amount ??
+    0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// ---- Core logic ----
+
+function round2(n: number) {
+  return Math.round(n * 100) / 100;
+}
+
+function confidenceFor(unitsSold: number, windowDays: number): Confidence {
+  // Simple heuristic: enough events per window => higher confidence
+  if (unitsSold >= Math.max(10, windowDays)) return "high";
+  if (unitsSold >= Math.max(4, Math.floor(windowDays / 2))) return "medium";
+  return "low";
+}
+
+function severityFor(daysToStockout: number): Severity | null {
+  if (!Number.isFinite(daysToStockout)) return null;
+  if (daysToStockout <= 3) return "high";
+  if (daysToStockout <= 7) return "medium";
+  if (daysToStockout <= 14) return "low";
+  return null; // not risky enough
+}
+
+export function evaluateInventoryVelocityRisk(ctx: any): InventoryVelocityRiskInsight | null {
+  const now = ctx?.now ? new Date(ctx.now) : new Date();
+  const nowMs = now.getTime();
+
+  const orders: CtxOrder[] = Array.isArray(ctx?.orders) ? ctx.orders : [];
+  const products: CtxProduct[] = Array.isArray(ctx?.products) ? ctx.products : [];
+
+  // Map products by id for joins
+  const productById = new Map<string, CtxProduct>();
+  for (const p of products) {
+    const id = getProductId(p);
+    if (id) productById.set(id, p);
+  }
+
+  // Precompute sales per product for multiple windows
+  const WINDOWS = [7, 14, 30];
+
+  type SalesAgg = {
+    units: number;
+    lastSaleMs: number | null;
+  };
+
+  // windowDays -> productId -> SalesAgg
+  const salesByWindow = new Map<number, Map<string, SalesAgg>>();
+  for (const w of WINDOWS) salesByWindow.set(w, new Map());
 
   for (const o of orders) {
-    if (!o?.created_at) continue;
-    if (o.cancelled_at) continue;
+    if (isCancelled(o)) continue;
+    const createdMs = getOrderCreatedAt(o);
+    if (!createdMs) continue;
 
-    const createdAt = new Date(o.created_at).getTime();
-    const seenProductIds = new Set<string>();
+    const items = extractLineItems(o);
+    if (items.length === 0) continue;
 
-    for (const li of o.line_items ?? []) {
-      const pid = li?.product_id;
-      const qty = Number(li?.quantity ?? 0);
-      if (!pid || !Number.isFinite(qty) || qty <= 0) continue;
+    for (const w of WINDOWS) {
+      const cutoffMs = nowMs - w * 24 * 60 * 60 * 1000;
+      if (createdMs < cutoffMs) continue;
 
-      const cur = stats.get(pid) ?? { units: 0, ordersCount: 0, firstSeenAt: createdAt };
-      cur.units += qty;
-      cur.firstSeenAt = Math.min(cur.firstSeenAt, createdAt);
-      stats.set(pid, cur);
+      const bucket = salesByWindow.get(w)!;
 
-      seenProductIds.add(pid);
-    }
+      for (const it of items) {
+        const pid = it.product_id;
+        if (!pid) continue;
 
-    for (const pid of seenProductIds) {
-      const cur = stats.get(pid);
-      if (cur) cur.ordersCount += 1;
+        const prev = bucket.get(pid) ?? { units: 0, lastSaleMs: null };
+        const units = prev.units + it.quantity;
+        const lastSaleMs = prev.lastSaleMs ? Math.max(prev.lastSaleMs, createdMs) : createdMs;
+        bucket.set(pid, { units, lastSaleMs });
+      }
     }
   }
 
-  // Score risky products
-  const risky: any[] = [];
+  // Choose best window per product (7d if enough data, else 14d, else 30d)
+  const candidates: InventoryVelocityRiskItem[] = [];
+  let candidatesConsidered = 0;
 
-  for (const p of products) {
-    const pid = p.id;
-    const inv = Number(p.inventory_quantity ?? 0); // your build-context should map totalInventory -> inventory_quantity
-    const s = stats.get(pid);
+  for (const [pid, p] of productById.entries()) {
+    const inv = getProductInv(p);
+    const price = getProductPrice(p);
+    if (inv <= 0) continue; // already out of stock; handled by inventory_pressure
+    if (!Number.isFinite(inv)) continue;
 
-    const ordersCount = s?.ordersCount ?? 0;
-    const units = s?.units ?? 0;
+    // Find a window where it actually sold
+    let chosenWindow: number | null = null;
+    let unitsSold = 0;
+    let lastSaleMs: number | null = null;
 
-    // only consider products that actually sell (otherwise noise)
-    if (ordersCount <= 0) continue;
+    for (const w of WINDOWS) {
+      const bucket = salesByWindow.get(w)!;
+      const agg = bucket.get(pid);
+      if (!agg) continue;
 
-    // days covered for velocity
-    const firstSeenAt = s?.firstSeenAt ?? now.getTime();
-    const daysCovered = Math.max(
-      1,
-      Math.min(30, Math.floor((now.getTime() - firstSeenAt) / (24 * 3600 * 1000)) + 1)
-    );
+      // Choose first window with meaningful sales
+      // (Prefer shorter window if it has any sales; but ensure not too sparse)
+      if (agg.units >= 2 || w === 30) {
+        chosenWindow = w;
+        unitsSold = agg.units;
+        lastSaleMs = agg.lastSaleMs;
+        break;
+      }
+    }
 
-    const velocity = units / daysCovered; // units/day
-    const daysOfCover = velocity > 0 ? inv / velocity : Infinity;
+    // If no sales in 30d, it’s not a velocity stockout risk (it’s dead inventory)
+    if (!chosenWindow || unitsSold <= 0) continue;
 
-    let severity: "high" | "medium" | null = null;
+    candidatesConsidered++;
 
-    if (inv === 0) severity = "high";
-    else if (daysOfCover <= 3) severity = "high";
-    else if (daysOfCover <= 7) severity = "medium";
+    const dailyUnits = unitsSold / chosenWindow;
+    if (dailyUnits <= 0) continue;
 
-    if (!severity) continue;
+    const daysToStockout = inv / dailyUnits;
+    const sev = severityFor(daysToStockout);
+    if (!sev) continue;
 
-    risky.push({
-      id: pid,
-      title: p.title,
+    const conf = confidenceFor(unitsSold, chosenWindow);
+
+    const unitsNext7d = dailyUnits * 7;
+    const sellableUnits7d = Math.min(inv, unitsNext7d);
+    const revAtRisk7d = round2(sellableUnits7d * price);
+
+    const title = getProductTitle(p);
+
+    candidates.push({
+      product_id: pid,
+      title,
       inventory: inv,
-      orders_30d: ordersCount,
-      units_30d: units,
-      velocity_units_per_day: Number(velocity.toFixed(2)),
-      days_of_cover: Number(daysOfCover.toFixed(1)),
-      severity,
+      price,
+      window_days: chosenWindow,
+      units_sold_in_window: unitsSold,
+      daily_units: round2(dailyUnits),
+      days_to_stockout: round2(daysToStockout),
+      confidence: conf,
+      revenue_at_risk_estimate_7d: revAtRisk7d,
+      last_sale_at: lastSaleMs ? new Date(lastSaleMs).toISOString() : null,
     });
   }
 
-  if (risky.length === 0) return null;
+  if (candidates.length === 0) return null;
 
-  // Rank: high first, then lowest days_of_cover
-  risky.sort((a, b) => {
-    const sa = a.severity === "high" ? 0 : 1;
-    const sb = b.severity === "high" ? 0 : 1;
-    if (sa !== sb) return sa - sb;
-    return a.days_of_cover - b.days_of_cover;
+  // Rank: soonest stockout first; tie-break by revenue-at-risk
+  candidates.sort((a, b) => {
+    if (a.days_to_stockout !== b.days_to_stockout) return a.days_to_stockout - b.days_to_stockout;
+    return b.revenue_at_risk_estimate_7d - a.revenue_at_risk_estimate_7d;
   });
 
-  const top = risky.slice(0, 8);
-  const highCount = risky.filter(r => r.severity === "high").length;
-  const overallSeverity: "high" | "medium" = highCount > 0 ? "high" : "medium";
+  const top = candidates.slice(0, 8);
+
+  // Overall severity is max of top items
+  const severity: Severity =
+    top.some((x) => x.days_to_stockout <= 3) ? "high" :
+    top.some((x) => x.days_to_stockout <= 7) ? "medium" :
+    "low";
 
   const title =
-    overallSeverity === "high"
-      ? "Stockouts likely in the next few days"
-      : "Inventory risk building on fast sellers";
+    severity === "high"
+      ? "Stockouts likely within days for fast sellers"
+      : severity === "medium"
+      ? "Some fast sellers may stock out soon"
+      : "A few products are trending toward stockout";
 
-  const description =
-    `Based on the last 30 days of sales velocity, these items are likely to stock out soon: ` +
-    top.map(t => `${t.title} (inv ${t.inventory}, ~${t.days_of_cover} days)`).join(", ") +
-    ".";
+  const summary =
+    `Based on recent sales velocity, ${top.length} product(s) may stock out soon. ` +
+    `Soonest: ${top[0].title} (~${top[0].days_to_stockout} days).`;
 
   const suggested_action =
-    "Restock the highest-velocity items first. If restock isn’t possible, pause ads and push substitutes in collections until inventory recovers.";
+    "Prioritize replenishment for the top items, pause ads or featured placement if inventory is too low, and add back-in-stock capture if restock timing is uncertain.";
+
+  // Pick evaluated_window_days as the most common chosen window in top
+  const windowCounts = top.reduce((acc, x) => {
+    acc[x.window_days] = (acc[x.window_days] ?? 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const evaluated_window_days = Number(
+    Object.entries(windowCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 7
+  );
 
   return {
-    type: "inventory_velocity_risk",
+    key: "inventory_velocity_risk",
     title,
-    description,
-    severity: overallSeverity,
+    severity,
+    summary,
     suggested_action,
-    data_snapshot: {
-      window_days: 30,
-      evaluated_at: new Date().toISOString(),
-      items: top,
-      totals: { risky_count: risky.length, high_count: highCount },
+    items: top,
+    metrics: {
+      evaluated_window_days,
+      candidates_considered: candidatesConsidered,
+      items_flagged: candidates.length,
     },
+    evaluated_at: now.toISOString(),
   };
 }

@@ -124,7 +124,7 @@ const GUARD_HOURS: Record<string, number> = {
   sales_rhythm_drift: 6,
 
   // dead inventory is strategic; don’t repeat too often
-  dead_inventory: 0, // 7 days
+  dead_inventory: 24 * 7, // 7 days
 };
 
 async function alreadyInsertedWithin(shopId: string, type: string, hours: number) {
