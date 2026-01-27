@@ -22,7 +22,7 @@ query InsightContext($ordersQuery: String!) {
     }
   }
 
-  products(first: 250, sortKey: INVENTORY_QUANTITY, reverse: false) {
+  products(first: 250, sortKey: INVENTORY_QUANTITY, reverse: true) {
     edges {
       node {
         id
