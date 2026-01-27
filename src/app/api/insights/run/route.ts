@@ -7,6 +7,8 @@ import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
 import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
 import { evaluateInventoryVelocityRisk } from "@/core/insights/inventory-velocity-risk";
 import { evaluateDeadInventory } from "@/core/insights/dead-inventory";
+import { evaluateProductConcentrationRisk } from "@/core/insights/product-concentration-risk";
+
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -217,6 +219,13 @@ if (dead) candidates.push(dead);
     const velocity = evaluateInventoryVelocityRisk(ctx);
     if (velocity) candidates.push(velocity);
 
+    const now = new Date();
+
+// evaluate (raw data, not ctx)
+const concentration = evaluateProductConcentrationRisk({ data, now, windowDays: 14 });
+if (concentration) candidates.push(concentration);
+//evaluated.push("product_concentration");
+
     // ---- Persist (guarded) ----
     const inserts: DbInsight[] = [];
     const skipped: Array<{ type: string; reason: string }> = [];
@@ -237,7 +246,7 @@ if (dead) candidates.push(dead);
     }
 
     if (inserts.length > 0) {
-      const { error: insErr } = await supabase.from("insights").insert(inserts);
+      const { error: insErr } = await supabase.from("insights").upsert(inserts, { onConflict: "shop_id,type" });
       if (insErr) {
         return NextResponse.json({ error: "Insert failed", details: insErr.message }, { status: 500 });
       }
