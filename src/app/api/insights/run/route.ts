@@ -422,9 +422,13 @@ export async function POST(req: NextRequest) {
 
     if (inserts.length > 0) {
       // ✅ insert (preserve history)
-      const { error: insErr } = await supabase.from("insights").insert(inserts);
-      if (insErr) {
-        return NextResponse.json({ error: "Insert failed", details: insErr.message }, { status: 500 });
+      const { error: upsertErr } = await supabase
+  .from("insights")
+  .upsert(inserts, {
+    onConflict: "shop_id,type",
+  });
+      if (upsertErr) {
+        return NextResponse.json({ error: "Upsert failed", details: upsertErr.message }, { status: 500 });
       }
     }
 
