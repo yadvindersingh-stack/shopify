@@ -3,11 +3,12 @@ import { supabase } from "@/lib/supabase";
 import { shopifyGraphql } from "@/lib/shopify-admin";
 import { INSIGHT_CONTEXT_QUERY } from "@/lib/queries/insight-context";
 import { buildInsightContext } from "@/core/insights/build-context";
-import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
+
 import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
+
+// Your existing evaluators (keep these imports exactly as in your project)
+import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
 import { evaluateInventoryVelocityRisk } from "@/core/insights/inventory-velocity-risk";
-import { evaluateProductConcentrationRisk } from "@/core/insights/product-concentration-risk";
-import { evaluatePriceVolatilityRisk } from "@/core/insights/price-volatility-risk";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,77 +25,13 @@ type DbInsight = {
   data_snapshot: any;
 };
 
-function normalizeShop(shop?: string | null) {
-  return (shop || "")
+function normalizeShop(input: string | null): string | null {
+  if (!input) return null;
+  return input
     .trim()
     .toLowerCase()
     .replace(/^https?:\/\//, "")
     .replace(/\/.*$/, "");
-}
-
-/**
- * Inventory Pressure (simple deterministic rule)
- * fires if ANY product inventory <= 2
- */
-function evaluateInventoryPressureFromShopifyData(data: any) {
-  const raw = data?.products;
-
-  let nodes: any[] = [];
-  if (Array.isArray(raw?.edges)) nodes = raw.edges.map((e: any) => e?.node).filter(Boolean);
-  else if (Array.isArray(raw?.nodes)) nodes = raw.nodes.filter(Boolean);
-  else if (Array.isArray(raw)) nodes = raw;
-
-  // Try multiple inventory fields (Shopify can vary based on mapping)
-  const invOf = (p: any) => {
-    const v =
-      p?.totalInventory ??
-      p?.inventory_quantity ??
-      p?.inventoryQuantity ??
-      p?.inventory ??
-      p?.inv ??
-      0;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
-  };
-
-  const normalized = nodes
-    .map((p) => ({
-      title: p?.title || "Untitled product",
-      inv: invOf(p),
-      id: p?.id,
-    }))
-    .sort((a, b) => a.inv - b.inv);
-
-  const low = normalized.filter((p) => p.inv <= 2);
-
-  // keep diag small & useful
-  console.log("INV_DIAG", {
-    productsCount: normalized.length,
-    lowest10: normalized.slice(0, 10).map((p) => ({ title: p.title, inv: p.inv })),
-    lowCount: low.length,
-  });
-
-  if (!low.length) return null;
-
-  const hasZero = low.some((p) => p.inv === 0);
-  const severity: "high" | "medium" = hasZero ? "high" : "medium";
-
-  const top = low.slice(0, 5);
-  return {
-    key: "inventory_pressure",
-    title: hasZero ? "Products are out of stock" : "Some products are running low",
-    severity,
-    summary:
-      "These items have very low inventory: " +
-      top.map((p) => `${p.title} (${p.inv})`).join(", ") +
-      (low.length > top.length ? ` (+${low.length - top.length} more)` : "") +
-      ".",
-    suggested_action: hasZero
-      ? "Restock or set expectations (preorder/backorder). Consider pausing ads for out-of-stock items."
-      : "Restock soon or adjust merchandising to avoid stockouts.",
-    items: low,
-    evaluated_at: new Date().toISOString(),
-  };
 }
 
 function toDbInsight(shopId: string, r: any): DbInsight {
@@ -118,8 +55,6 @@ const GUARD_HOURS: Record<string, number> = {
   inventory_velocity_risk: 6,
   sales_rhythm_drift: 6,
   dead_inventory: 24 * 7, // 7 days
-  product_concentration: 24, // 1 day
-  price_volatility_risk: 24, // 1 day
 };
 
 async function alreadyInsertedWithin(shopId: string, type: string, hours: number) {
@@ -132,48 +67,78 @@ async function alreadyInsertedWithin(shopId: string, type: string, hours: number
     .gte("created_at", since)
     .limit(1);
 
-  if (error) return false; // fail open
+  // Fail open: don’t block scans if Supabase has a transient read issue
+  if (error) return false;
   return Array.isArray(data) && data.length > 0;
 }
 
 /**
- * Price snapshots (required for price volatility insight)
- * NOTE: Assumes you created `product_price_snapshots` table.
+ * Inventory pressure from Shopify GraphQL response (data.products.*)
  */
-async function snapshotProductPrices(args: { supabase: any; shopId: string; data: any; now: Date }) {
-  const { supabase, shopId, data, now } = args;
-
+function evaluateInventoryPressureFromShopifyData(data: any) {
   const edges = data?.products?.edges ?? [];
-  if (!edges.length) return { inserted: 0 };
+  const nodes = Array.isArray(edges) ? edges.map((e: any) => e?.node).filter(Boolean) : [];
 
-  const rows = edges
-    .map((e: any) => {
-      const id = e?.node?.id ? String(e.node.id) : "";
-      const title = e?.node?.title ? String(e.node.title) : null;
-      const price = Number(e?.node?.priceRangeV2?.minVariantPrice?.amount);
-      if (!id || !Number.isFinite(price)) return null;
-      return {
-        shop_id: shopId,
-        product_id: id,
-        title,
-        price,
-        captured_at: now.toISOString(),
-      };
-    })
-    .filter(Boolean);
+  const invOf = (p: any) => {
+    const v =
+      p?.totalInventory ??
+      p?.inventory_quantity ??
+      p?.inventoryQuantity ??
+      p?.inventory ??
+      p?.inv ??
+      0;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
 
-  if (!rows.length) return { inserted: 0 };
+  const normalized = nodes
+    .map((p: any) => ({
+      id: p?.id,
+      title: p?.title || "Untitled product",
+      inv: invOf(p),
+    }))
+    .sort((a, b) => a.inv - b.inv);
 
-  const { error } = await supabase.from("product_price_snapshots").insert(rows);
-  if (error) throw new Error(`Failed to insert price snapshots: ${error.message}`);
+  const low = normalized.filter((p) => p.inv <= 2);
 
-  return { inserted: rows.length };
+  console.log("INV_DIAG", {
+    productsCount: normalized.length,
+    lowest10: normalized.slice(0, 10).map((p) => ({ title: p.title, inv: p.inv })),
+    lowCount: low.length,
+  });
+
+  if (!low.length) return null;
+
+  const hasZero = low.some((p) => p.inv === 0);
+  const severity: "high" | "medium" = hasZero ? "high" : "medium";
+  const top = low.slice(0, 5);
+
+  return {
+    key: "inventory_pressure",
+    title: hasZero ? "Products are out of stock" : "Some products are running low",
+    severity,
+    summary:
+      "These items have very low inventory: " +
+      top.map((p) => `${p.title} (${p.inv})`).join(", ") +
+      (low.length > top.length ? ` (+${low.length - top.length} more)` : "") +
+      ".",
+    suggested_action: hasZero
+      ? "Restock or set expectations (preorder/backorder). Consider pausing ads for out-of-stock items."
+      : "Restock soon or adjust merchandising to avoid stockouts.",
+    // keep full list for “Show all”
+    items: low,
+    evaluated_at: new Date().toISOString(),
+  };
 }
 
 /**
- * Dead inventory v2 (your current implementation)
+ * Dead inventory from Shopify GraphQL response (data.orders + data.products)
+ * Stores FULL items list in snapshot for “Show all”.
  */
-function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: number; minStock?: number }) {
+function evaluateDeadInventoryFromShopifyData(
+  data: any,
+  opts?: { windowDays?: number; minStock?: number }
+) {
   const WINDOW_DAYS = opts?.windowDays ?? 30;
   const MIN_STOCK = opts?.minStock ?? 10;
   const SLOW_MOVER_DAYS = 90;
@@ -182,9 +147,11 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
   const cutoff30Ms = now.getTime() - WINDOW_DAYS * 24 * 60 * 60 * 1000;
   const cutoff90Ms = now.getTime() - SLOW_MOVER_DAYS * 24 * 60 * 60 * 1000;
 
+  // Products
   const pEdges = data?.products?.edges ?? [];
   const products = Array.isArray(pEdges) ? pEdges.map((e: any) => e?.node).filter(Boolean) : [];
 
+  // Orders
   const oEdges = data?.orders?.edges ?? [];
   const orders = Array.isArray(oEdges) ? oEdges.map((e: any) => e?.node).filter(Boolean) : [];
 
@@ -193,7 +160,6 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
 
   for (const o of orders) {
     if (o?.cancelledAt) continue;
-
     const createdAt = o?.createdAt;
     const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
     if (!Number.isFinite(createdMs)) continue;
@@ -205,7 +171,6 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
       if (!pid) continue;
 
       everSoldSet.add(pid);
-
       const prev = lastSaleMsByProduct.get(pid);
       if (!prev || createdMs > prev) lastSaleMsByProduct.set(pid, createdMs);
     }
@@ -298,17 +263,13 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
     return acc;
   }, {} as Record<string, number>);
 
-  console.log("DEAD_INV_V2_DIAG", {
+  console.log("DEAD_INV_DIAG", {
     productsCount: products.length,
     ordersCount: orders.length,
     minStock: MIN_STOCK,
     deadCount: deadItems.length,
     buckets: bucketCounts,
-    topByCash: deadItems
-      .slice()
-      .sort((a, b) => b.cash_trapped_estimate - a.cash_trapped_estimate)
-      .slice(0, 5)
-      .map((x) => ({ title: x.title, bucket: x.bucket, cash: x.cash_trapped_estimate })),
+    sample: deadItems.slice(0, 5).map((x) => ({ title: x.title, inv: x.inventory, days: x.days_since_last_sale })),
   });
 
   if (deadItems.length === 0) return null;
@@ -317,11 +278,8 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
 
   const deadCount = deadItems.length;
   const totalTrapped = deadItems.reduce((sum, x) => sum + x.cash_trapped_estimate, 0);
-
   const severity: "high" | "medium" | "low" =
     totalTrapped >= 500 ? "high" : deadCount >= 3 ? "medium" : "low";
-
-  const top = deadItems.slice(0, 8);
 
   const dominantBucket =
     (bucketCounts["never_sold"] ?? 0) >= (bucketCounts["stopped_selling"] ?? 0) &&
@@ -330,6 +288,8 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
       : (bucketCounts["stopped_selling"] ?? 0) >= (bucketCounts["slow_mover"] ?? 0)
       ? "stopped_selling"
       : "slow_mover";
+
+  const top = deadItems.slice(0, 8);
 
   const title =
     severity === "high" ? "Cash is trapped in non-moving inventory" : "Some inventory isn’t moving";
@@ -361,7 +321,8 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
       buckets: bucketCounts,
       total_cash_trapped_estimate: Math.round(totalTrapped * 100) / 100,
     },
-    items: top,
+    // ✅ FULL list (Show all)
+    items: deadItems,
   };
 }
 
@@ -391,7 +352,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Shop not installed or missing access token", shop }, { status: 403 });
     }
 
-    // Force insert path (keep as-is)
+    // Fast DB pipe test
     if (force) {
       const row: DbInsight = {
         shop_id: shopRow.id,
@@ -407,10 +368,9 @@ export async function POST(req: NextRequest) {
       if (insErr) {
         return NextResponse.json({ error: "Force insert failed", details: insErr.message }, { status: 500 });
       }
-      return NextResponse.json({ inserted: 1, keys: ["force_test"], forced: true });
+      return NextResponse.json({ inserted: 1, keys: ["force_test"], evaluated: ["force_test"], skipped: [] });
     }
 
-    // Fetch context once
     const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
     const ordersQuery = `created_at:>=${sinceIso}`;
 
@@ -421,50 +381,27 @@ export async function POST(req: NextRequest) {
       variables: { ordersQuery },
     });
 
-    const now = new Date();
+    const ctx = buildInsightContext(shop, new Date(), data);
 
-    // ✅ Step 3 (the missing piece): snapshot prices every scan
-    // This is harmless even if you don't trigger price volatility yet.
-    try {
-      const snap = await snapshotProductPrices({ supabase, shopId: shopRow.id, data, now });
-      console.log("PRICE_SNAPSHOT_DIAG", snap);
-    } catch (e: any) {
-      console.log("PRICE_SNAPSHOT_FAILED", e?.message || String(e));
-      // Don't fail the whole scan; snapshotting shouldn't break core insights.
-    }
-
-    const ctx = buildInsightContext(shop, now, data);
-
-    // ---- Evaluate (pure) ----
     const candidates: any[] = [];
+    const evaluated: string[] = [];
 
     const drift = await evaluateSalesRhythmDrift(ctx);
+    evaluated.push("sales_rhythm_drift");
     if (drift) candidates.push(drift);
 
     const invPressure = evaluateInventoryPressureFromShopifyData(data);
+    evaluated.push("inventory_pressure");
     if (invPressure) candidates.push(invPressure);
 
-    const dead = evaluateDeadInventoryFromShopifyData(data, { windowDays: 30, minStock: 10 });
-    if (dead) candidates.push(dead);
+    const deadInv = evaluateDeadInventoryFromShopifyData(data, { windowDays: 30, minStock: 10 });
+    evaluated.push("dead_inventory");
+    if (deadInv) candidates.push(deadInv);
 
     const velocity = evaluateInventoryVelocityRisk(ctx);
+    evaluated.push("inventory_velocity_risk");
     if (velocity) candidates.push(velocity);
 
-    // Product concentration (raw data, not ctx)
-    const concentration = (evaluateProductConcentrationRisk as any)({ data, now, windowDays: 14 });
-    if (concentration) candidates.push(concentration);
-
-    // ✅ Price volatility (uses snapshots + current data)
-    const priceVol = await (evaluatePriceVolatilityRisk as any)({
-      supabase,
-      shopId: shopRow.id,
-      data,
-      now,
-      lookbackDays: 7,
-    });
-    if (priceVol) candidates.push(priceVol);
-
-    // ---- Persist (guarded) ----
     const inserts: DbInsight[] = [];
     const skipped: Array<{ type: string; reason: string }> = [];
 
@@ -484,10 +421,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (inserts.length > 0) {
-      const { error: insErr } = await supabase
-        .from("insights")
-        .upsert(inserts, { onConflict: "shop_id,type" });
-
+      // ✅ insert (preserve history)
+      const { error: insErr } = await supabase.from("insights").insert(inserts);
       if (insErr) {
         return NextResponse.json({ error: "Insert failed", details: insErr.message }, { status: 500 });
       }
@@ -496,12 +431,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       inserted: inserts.length,
       keys: inserts.map((i) => i.type),
-      evaluated: candidates.map((c) => c?.key || c?.type).filter(Boolean),
+      evaluated,
       skipped,
       diag: {
         products_present: Boolean((data as any)?.products),
-        products_edges: (data as any)?.products?.edges?.length ?? null,
-        orders_edges: (data as any)?.orders?.edges?.length ?? null,
+        products_edges: (data as any)?.products?.edges?.length ?? 0,
+        orders_edges: (data as any)?.orders?.edges?.length ?? 0,
       },
     });
   } catch (e: any) {
