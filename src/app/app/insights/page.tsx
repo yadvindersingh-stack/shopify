@@ -35,6 +35,7 @@ export default function InsightsPage() {
   const [scanLoading, setScanLoading] = useState(false);
   const [banner, setBanner] = useState<{ tone: "critical" | "warning" | "success" | "info"; title: string; body?: string } | null>(null);
   const [setupMissing, setSetupMissing] = useState(false);
+  const [scanMeta, setScanMeta] = useState<{ last?: string | null; next?: string | null }>({});
 
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -59,6 +60,12 @@ export default function InsightsPage() {
     const diffDays = Math.floor(diffHours / 24);
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
   }, [insights]);
+
+  const scanSubtitle = useMemo(() => {
+    const last = scanMeta.last ? new Date(scanMeta.last).toLocaleString() : "Never";
+    const next = scanMeta.next ? new Date(scanMeta.next).toLocaleString() : "Not scheduled";
+    return `Last scan: ${last} · Next scan: ${next}`;
+  }, [scanMeta]);
 
   const fetchInsights = useCallback(async () => {
     setLoading(true);
@@ -93,6 +100,11 @@ export default function InsightsPage() {
           body: "Add an email in Setup so we can send daily/weekly digests. You can still view insights history.",
         });
       }
+const scanRes = await apiFetch("/api/scan-status", { cache: "no-store" });
+if (scanRes.ok) {
+  const scan = await scanRes.json();
+  setScanMeta({ last: scan?.last_scan_at ?? null, next: scan?.next_scan_at ?? null });
+}
 
       // 2) Insights list
       const res = await apiFetch("/api/insights", { cache: "no-store" });
@@ -169,7 +181,7 @@ export default function InsightsPage() {
   return (
     <Page
       title="Today’s insights"
-      subtitle={`Last scan: ${lastScan}`}
+      subtitle={scanSubtitle}
       primaryAction={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
       secondaryActions={[
         { content: "Settings", onAction: () => router.push(withHost("/app/settings")) },

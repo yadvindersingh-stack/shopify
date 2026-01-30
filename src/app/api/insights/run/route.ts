@@ -24,6 +24,61 @@ type DbInsight = {
   suggested_action: string | null;
   data_snapshot: any;
 };
+function getNext11AmISO(shopTimezone: string) {
+  // Compute "next 11:00" in the shop timezone, return as ISO in UTC.
+  // v0 approximation using Intl parts; good enough to ship.
+  const now = new Date();
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: shopTimezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+
+  const get = (t: string) => parts.find((p) => p.type === t)?.value;
+  const y = Number(get("year"));
+  const m = Number(get("month"));
+  const d = Number(get("day"));
+  const hour = Number(get("hour"));
+
+  // Build a "today 11:00 in shop TZ", then if already past, add 1 day.
+  // We construct a naive date string and let Date parse in UTC,
+  // then adjust by comparing using the timezone parts (good enough).
+  // (If you want perfect TZ math later, we’ll add a library.)
+  const candidateLocal = new Date(Date.UTC(y, m - 1, d, 11, 0, 0));
+
+  // If shop-local hour is already >= 11, schedule for tomorrow.
+  if (Number.isFinite(hour) && hour >= 11) {
+    candidateLocal.setUTCDate(candidateLocal.getUTCDate() + 1);
+  }
+
+  return candidateLocal.toISOString();
+}
+
+async function writeScanRun(shopId: string, payload: any, shopTimezone: string, status: "ok" | "error") {
+  const nowIso = new Date().toISOString();
+  const nextIso = getNext11AmISO(shopTimezone || "UTC");
+
+  const { error } = await supabase.from("scan_runs").upsert(
+    {
+      shop_id: shopId,
+      last_scan_at: nowIso,
+      next_scan_at: nextIso,
+      last_scan_status: status,
+      last_scan_summary: payload,
+      updated_at: nowIso,
+    },
+    { onConflict: "shop_id" }
+  );
+
+  // Fail open: don’t break scan response if scan_runs write fails.
+  if (error) console.log("SCAN_RUN_WRITE_FAILED", error.message);
+}
+
 
 function normalizeShop(input: string | null): string | null {
   if (!input) return null;
@@ -432,21 +487,48 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({
-      inserted: inserts.length,
-      keys: inserts.map((i) => i.type),
-      evaluated,
-      skipped,
-      diag: {
-        products_present: Boolean((data as any)?.products),
-        products_edges: (data as any)?.products?.edges?.length ?? 0,
-        orders_edges: (data as any)?.orders?.edges?.length ?? 0,
-      },
-    });
+    const responsePayload = {
+  persisted: inserts.length, // rename from inserted if you want (recommended)
+  keys: inserts.map((i) => i.type),
+  evaluated,
+  skipped,
+  diag: {
+    products_present: Boolean((data as any)?.products),
+    products_edges: (data as any)?.products?.edges?.length ?? 0,
+    orders_edges: (data as any)?.orders?.edges?.length ?? 0,
+  },
+};
+
+// You should have shop timezone from GraphQL (shop.ianaTimezone)
+const shopTimezone = (data as any)?.shop?.ianaTimezone || "UTC";
+
+await writeScanRun(shopRow.id, responsePayload, shopTimezone, "ok");
+return NextResponse.json(responsePayload);
+
   } catch (e: any) {
-    return NextResponse.json(
-      { error: "Failed to run insights", details: e?.message || String(e) },
-      { status: 500 }
-    );
-  }
-}
+  // best-effort write scan run error if we have shop_id
+  try {
+    const shopFromToken = getShopFromRequestAuthHeader(req.headers.get("authorization"))?.toLowerCase();
+    if (shopFromToken) {
+      const { data: shopRow } = await supabase
+        .from("shops")
+        .select("id")
+        .eq("shop_domain", shopFromToken)
+        .maybeSingle();
+
+      if (shopRow?.id) {
+        await writeScanRun(
+          shopRow.id,
+          { error: "Failed to run insights", details: e?.message || String(e) },
+          "UTC",
+          "error"
+        );
+      }
+    }
+  } catch {}
+  
+  return NextResponse.json(
+    { error: "Failed to run insights", details: e?.message || String(e) },
+    { status: 500 }
+  );
+  }}
