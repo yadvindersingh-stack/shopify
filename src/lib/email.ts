@@ -8,7 +8,7 @@ export async function sendDailyDigestEmail(args: {
   body: string;
 }) {
   return resend.emails.send({
-    from: "MerchPulse <alerts@closingagent.ca>",
+    from: "MerchPulse <alerts@ailawclerk.ca>",
     to: args.to,
     subject: args.subject,
     text: args.body,
