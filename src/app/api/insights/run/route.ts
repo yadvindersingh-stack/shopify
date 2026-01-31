@@ -9,6 +9,9 @@ import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
 // Your existing evaluators (keep these imports exactly as in your project)
 import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
 import { evaluateInventoryVelocityRisk } from "@/core/insights/inventory-velocity-risk";
+import { getActionableInsights } from "@/core/digest/get-actionable-insights";
+import { renderDailyEmail } from "@/core/digest/render-daily-email";
+import { sendDailyDigestEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -503,6 +506,28 @@ export async function POST(req: NextRequest) {
 const shopTimezone = (data as any)?.shop?.ianaTimezone || "UTC";
 
 await writeScanRun(shopRow.id, responsePayload, shopTimezone, "ok");
+
+const { data: settings } = await supabase
+  .from("digest_settings")
+  .select("email,daily_enabled")
+  .eq("shop_id", shopRow.id)
+  .maybeSingle();
+
+if (settings?.daily_enabled && settings?.email) {
+  const actionable = await getActionableInsights(shopRow.id);
+
+  if (actionable.length > 0) {
+    const subject = `⚠️ ${actionable.length} store issue${actionable.length > 1 ? "s" : ""} need attention today`;
+    const body = renderDailyEmail(actionable);
+
+    await sendDailyDigestEmail({
+      to: settings.email,
+      subject,
+      body,
+    });
+  }
+}
+
 return NextResponse.json(responsePayload);
 
   } catch (e: any) {
