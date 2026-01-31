@@ -398,7 +398,7 @@ export async function POST(req: NextRequest) {
 
     const { data: shopRow, error: shopErr } = await supabase
       .from("shops")
-      .select("id, access_token")
+      .select("id, access_token, shop_domain")
       .eq("shop_domain", shop)
       .maybeSingle();
 
@@ -518,7 +518,7 @@ if (settings?.daily_enabled && settings?.email) {
 
   if (actionable.length > 0) {
     const subject = `⚠️ ${actionable.length} store issue${actionable.length > 1 ? "s" : ""} need attention today`;
-    const body = renderDailyEmail(actionable);
+    const body = renderDailyEmail({ shopDomain: shopRow.shop_domain, insights: actionable });
 
     await sendDailyDigestEmail({
       to: settings.email,
