@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+
+import { useMemo, useState } from "react";
 import {
   Badge,
   BlockStack,
@@ -11,14 +12,16 @@ import {
   InlineStack,
   Text,
 } from "@shopify/polaris";
+import { parseAnyDate, formatHumanDateTime, relativeDayLabel } from "@/lib/dates";
 
 type Insight = {
   id: string;
   title: string;
-  description: string;
+  description: string | null;
   severity: "high" | "medium" | "low";
-  suggested_action: string;
-  data_snapshot: Record<string, any>;
+  suggested_action: string | null;
+  data_snapshot: Record<string, any> | null;
+  created_at?: string; // from DB
 };
 
 function severityTone(severity: Insight["severity"]) {
@@ -37,77 +40,123 @@ export default function InsightCard({ insight }: { insight: Insight }) {
   const [openDetails, setOpenDetails] = useState(false);
   const [openData, setOpenData] = useState(false);
 
+  const createdAt = useMemo(() => parseAnyDate(insight.created_at), [insight.created_at]);
+
+  // If your evaluator returns evaluated_at in snapshot, prefer that for “Updated …”
+  const evaluatedAt = useMemo(() => {
+    const raw = insight?.data_snapshot?.evaluated_at ?? insight?.data_snapshot?.evaluatedAt;
+    return parseAnyDate(typeof raw === "string" ? raw : null);
+  }, [insight?.data_snapshot]);
+
+  const statusLabel = useMemo(() => {
+    return relativeDayLabel({ createdAt, evaluatedAt });
+  }, [createdAt, evaluatedAt]);
+
+  const timestamp = useMemo(() => {
+    const d = evaluatedAt ?? createdAt;
+    return d ? formatHumanDateTime(d) : "—";
+  }, [createdAt, evaluatedAt]);
+
   const snapshotEntries = Object.entries(insight.data_snapshot || {});
 
   return (
     <Card>
       <Box padding="400">
-        <InlineStack align="space-between" blockAlign="center">
-          <InlineStack gap="200" blockAlign="center">
-            <Text variant="headingSm" as="h3">
-              {insight.title}
-            </Text>
-            <Badge tone={severityTone(insight.severity)}>{readableSeverity(insight.severity)}</Badge>
+        <BlockStack gap="200">
+          {/* Header */}
+          <InlineStack align="space-between" blockAlign="center">
+            <InlineStack gap="200" blockAlign="center">
+              <Text variant="headingMd" as="h3">
+                {insight.title}
+              </Text>
+              <Badge tone={severityTone(insight.severity)}>{readableSeverity(insight.severity)}</Badge>
+            </InlineStack>
+
+            <Button variant="plain" onClick={() => setOpenDetails((v) => !v)}>
+              {openDetails ? "Hide" : "Details"}
+            </Button>
           </InlineStack>
-          <Button variant="plain" onClick={() => setOpenDetails((v) => !v)}>
-            {openDetails ? "Hide details" : "Show details"}
-          </Button>
-        </InlineStack>
+
+          {/* Meta line */}
+          <InlineStack gap="200" blockAlign="center">
+            <Text as="span" tone="subdued">
+              {statusLabel}
+            </Text>
+            <Text as="span" tone="subdued">
+              •
+            </Text>
+            <Text as="span" tone="subdued">
+              {timestamp}
+            </Text>
+          </InlineStack>
+
+          {/* Compact summary (always visible) */}
+          {insight.description ? (
+            <Text as="p">{insight.description}</Text>
+          ) : (
+            <Text as="p" tone="subdued">
+              No description available.
+            </Text>
+          )}
+
+          {/* Suggested action (always visible) */}
+          {insight.suggested_action ? (
+            <Box paddingBlockStart="200">
+              <Text as="p" variant="bodyMd">
+                <Text as="span" fontWeight="semibold">
+                  Do this now:{" "}
+                </Text>
+                {insight.suggested_action}
+              </Text>
+            </Box>
+          ) : null}
+        </BlockStack>
       </Box>
+
+      {/* Details */}
       <Box padding="400" borderBlockStartWidth="025" borderColor="border">
         <BlockStack gap="300">
           <Collapsible open={openDetails} id={`${insight.id}-details`}>
             <BlockStack gap="200">
-              <BlockStack gap="100">
-                <Text variant="headingSm" as="h3">
-                  What we saw
+              <Divider />
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="span" tone="subdued">
+                  Data snapshot
                 </Text>
-                <Text as="p">{insight.description}</Text>
-              </BlockStack>
-              <BlockStack gap="100">
-                <Text variant="headingSm" as="h3">
-                  Why it matters
-                </Text>
-                <Text as="p">This could affect revenue or customer trust if left unchecked.</Text>
-              </BlockStack>
-              <BlockStack gap="100">
-                <Text variant="headingSm" as="h3">
-                  Suggested action
-                </Text>
-                <Text as="p">{insight.suggested_action}</Text>
-              </BlockStack>
-            </BlockStack>
-          </Collapsible>
+                <Button variant="plain" onClick={() => setOpenData((v) => !v)}>
+                  {openData ? "Hide" : "Show"}
+                </Button>
+              </InlineStack>
 
-          <Divider />
-
-          <InlineStack align="space-between" blockAlign="center">
-            <Text as="span" variant="bodyMd" tone="subdued">
-              View data
-            </Text>
-            <Button variant="plain" onClick={() => setOpenData((v) => !v)}>
-              {openData ? "Hide" : "Show"}
-            </Button>
-          </InlineStack>
-          <Collapsible open={openData} id={`${insight.id}-data`}>
-            <Box padding="300" background="bg-surface-tertiary" borderWidth="025" borderColor="border">
-              <BlockStack gap="150">
-                {snapshotEntries.length === 0 ? (
-                  <Text as="span" tone="subdued">No additional data.</Text>
-                ) : (
-                  snapshotEntries.map(([key, value]) => (
-                    <InlineStack key={key} align="space-between" blockAlign="center">
+              <Collapsible open={openData} id={`${insight.id}-data`}>
+                <Box
+                  padding="300"
+                  background="bg-surface-tertiary"
+                  borderWidth="025"
+                  borderColor="border"
+                  borderRadius="200"
+                >
+                  <BlockStack gap="150">
+                    {snapshotEntries.length === 0 ? (
                       <Text as="span" tone="subdued">
-                        {key}
+                        No additional data.
                       </Text>
-                      <Text as="span" alignment="end">
-                        {typeof value === "object" ? JSON.stringify(value) : String(value)}
-                      </Text>
-                    </InlineStack>
-                  ))
-                )}
-              </BlockStack>
-            </Box>
+                    ) : (
+                      snapshotEntries.map(([key, value]) => (
+                        <InlineStack key={key} align="space-between" blockAlign="center">
+                          <Text as="span" tone="subdued">
+                            {key}
+                          </Text>
+                          <Text as="span" alignment="end">
+                            {typeof value === "object" ? JSON.stringify(value) : String(value)}
+                          </Text>
+                        </InlineStack>
+                      ))
+                    )}
+                  </BlockStack>
+                </Box>
+              </Collapsible>
+            </BlockStack>
           </Collapsible>
         </BlockStack>
       </Box>

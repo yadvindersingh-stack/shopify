@@ -17,6 +17,8 @@ import {
 import InsightCard from "@/components/InsightCard";
 import { buildPathWithHost } from "@/lib/host";
 import { useApiFetch } from "@/hooks/useApiFetch";
+import { formatHumanDateTime } from "@/lib/dates";
+
 
 type InsightRow = {
   id: string;
@@ -28,6 +30,7 @@ type InsightRow = {
   data_snapshot: Record<string, any>;
   created_at?: string;
 };
+
 
 export default function InsightsPage() {
   const [insights, setInsights] = useState<InsightRow[]>([]);
@@ -41,6 +44,13 @@ export default function InsightsPage() {
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
   const apiFetch = useApiFetch();
+  const bySeverity = useMemo(() => {
+  const high = insights.filter((i) => i.severity === "high");
+  const medium = insights.filter((i) => i.severity === "medium");
+  const low = insights.filter((i) => i.severity === "low");
+  return { high, medium, low };
+}, [insights]);
+
 
   const withHost = useCallback(
     (path: string) => buildPathWithHost(path, hostParam),
@@ -61,11 +71,11 @@ export default function InsightsPage() {
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
   }, [insights]);
 
-  const scanSubtitle = useMemo(() => {
-    const last = scanMeta.last ? new Date(scanMeta.last).toLocaleString() : "Never";
-    const next = scanMeta.next ? new Date(scanMeta.next).toLocaleString() : "Not scheduled";
-    return `Last scan: ${last} · Next scan: ${next}`;
-  }, [scanMeta]);
+ const scanSubtitle = useMemo(() => {
+  const last = scanMeta.last ? formatHumanDateTime(new Date(scanMeta.last)) : "Never";
+  const next = scanMeta.next ? formatHumanDateTime(new Date(scanMeta.next)) : "Not scheduled";
+  return `Last scan: ${last} · Next scan: ${next}`;
+}, [scanMeta]);
 
   const fetchInsights = useCallback(async () => {
     setLoading(true);
@@ -225,11 +235,41 @@ if (scanRes.ok) {
                 </EmptyState>
               </Card>
             ) : (
-              <BlockStack gap="300">
-                {insights.map((insight) => (
-                  <InsightCard key={insight.id} insight={insight as any} />
-                ))}
-              </BlockStack>
+              <BlockStack gap="400">
+  {bySeverity.high.length > 0 && (
+    <BlockStack gap="200">
+      <Text variant="headingMd" as="h2">Critical</Text>
+      <BlockStack gap="300">
+        {bySeverity.high.map((insight) => (
+          <InsightCard key={insight.id} insight={insight} />
+        ))}
+      </BlockStack>
+    </BlockStack>
+  )}
+
+  {bySeverity.medium.length > 0 && (
+    <BlockStack gap="200">
+      <Text variant="headingMd" as="h2">Needs attention</Text>
+      <BlockStack gap="300">
+        {bySeverity.medium.map((insight) => (
+          <InsightCard key={insight.id} insight={insight} />
+        ))}
+      </BlockStack>
+    </BlockStack>
+  )}
+
+  {bySeverity.low.length > 0 && (
+    <BlockStack gap="200">
+      <Text variant="headingMd" as="h2">Keep an eye on</Text>
+      <BlockStack gap="300">
+        {bySeverity.low.map((insight) => (
+          <InsightCard key={insight.id} insight={insight} />
+        ))}
+      </BlockStack>
+    </BlockStack>
+  )}
+</BlockStack>
+
             )}
           </BlockStack>
         </Layout.Section>
