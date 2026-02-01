@@ -5,7 +5,7 @@ export async function getActionableInsights(shopId: string) {
     .from("insights")
     .select("type,title,description,severity,suggested_action")
     .eq("shop_id", shopId)
-    .in("severity", ["high", "medium"])
+    .in("severity", ["high", "medium", "low"])
     .order("severity", { ascending: false });
 
   if (error) throw new Error(error.message);
