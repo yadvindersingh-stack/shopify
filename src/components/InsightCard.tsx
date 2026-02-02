@@ -24,6 +24,7 @@ type Insight = {
   created_at?: string; // from DB
 };
 
+
 function severityTone(severity: Insight["severity"]) {
   if (severity === "high") return "critical" as const;
   if (severity === "medium") return "warning" as const;
@@ -58,6 +59,21 @@ export default function InsightCard({ insight }: { insight: Insight }) {
   }, [createdAt, evaluatedAt]);
 
   const snapshotEntries = Object.entries(insight.data_snapshot || {});
+  const snapshot = insight.data_snapshot || {};
+const indicators = Array.isArray(snapshot.indicators) ? snapshot.indicators : [];
+const metrics = snapshot.metrics && typeof snapshot.metrics === "object" ? snapshot.metrics : null;
+
+function prettyKey(k: string) {
+  return k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatValue(v: any) {
+  if (v == null) return "—";
+  if (typeof v === "number") return Number.isFinite(v) ? v.toLocaleString() : String(v);
+  if (typeof v === "string") return v;
+  return JSON.stringify(v);
+}
+
 
   return (
     <Card>
@@ -118,44 +134,97 @@ export default function InsightCard({ insight }: { insight: Insight }) {
         <BlockStack gap="300">
           <Collapsible open={openDetails} id={`${insight.id}-details`}>
             <BlockStack gap="200">
-              <Divider />
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="span" tone="subdued">
-                  Data snapshot
-                </Text>
-                <Button variant="plain" onClick={() => setOpenData((v) => !v)}>
-                  {openData ? "Hide" : "Show"}
-                </Button>
-              </InlineStack>
+             <Divider />
 
-              <Collapsible open={openData} id={`${insight.id}-data`}>
-                <Box
-                  padding="300"
-                  background="bg-surface-tertiary"
-                  borderWidth="025"
-                  borderColor="border"
-                  borderRadius="200"
-                >
-                  <BlockStack gap="150">
-                    {snapshotEntries.length === 0 ? (
-                      <Text as="span" tone="subdued">
-                        No additional data.
-                      </Text>
-                    ) : (
-                      snapshotEntries.map(([key, value]) => (
-                        <InlineStack key={key} align="space-between" blockAlign="center">
-                          <Text as="span" tone="subdued">
-                            {key}
-                          </Text>
-                          <Text as="span" alignment="end">
-                            {typeof value === "object" ? JSON.stringify(value) : String(value)}
-                          </Text>
-                        </InlineStack>
-                      ))
-                    )}
-                  </BlockStack>
-                </Box>
-              </Collapsible>
+<Text variant="headingSm" as="h4">
+  Evidence
+</Text>
+
+{indicators.length > 0 ? (
+  <BlockStack gap="200">
+    {indicators.map((i: any) => (
+      <Box
+        key={i.key || i.label}
+        padding="300"
+        background="bg-surface-tertiary"
+        borderWidth="025"
+        borderColor="border"
+        borderRadius="200"
+      >
+        <BlockStack gap="100">
+          <InlineStack align="space-between" blockAlign="center">
+            <Text as="span" fontWeight="semibold">
+              {i.label || i.key || "Signal"}
+            </Text>
+            <Badge tone={i.status === "likely" ? "critical" : i.status === "possible" ? "warning" : "info"}>
+              {String(i.status || "unknown")}
+            </Badge>
+          </InlineStack>
+          {i.evidence ? (
+            <Text as="p" tone="subdued">
+              {i.evidence}
+            </Text>
+          ) : (
+            <Text as="p" tone="subdued">
+              No evidence provided.
+            </Text>
+          )}
+        </BlockStack>
+      </Box>
+    ))}
+  </BlockStack>
+) : metrics ? (
+  <Box
+    padding="300"
+    background="bg-surface-tertiary"
+    borderWidth="025"
+    borderColor="border"
+    borderRadius="200"
+  >
+    <BlockStack gap="150">
+      {Object.entries(metrics).slice(0, 10).map(([k, v]) => (
+        <InlineStack key={k} align="space-between" blockAlign="center">
+          <Text as="span" tone="subdued">
+            {prettyKey(k)}
+          </Text>
+          <Text as="span" alignment="end">
+            {formatValue(v)}
+          </Text>
+        </InlineStack>
+      ))}
+    </BlockStack>
+  </Box>
+) : (
+  <Text as="p" tone="subdued">
+    No evidence available for this insight.
+  </Text>
+)}
+
+<Divider />
+
+<InlineStack align="space-between" blockAlign="center">
+  <Text as="span" tone="subdued">
+    Raw data (advanced)
+  </Text>
+  <Button variant="plain" onClick={() => setOpenData((v) => !v)}>
+    {openData ? "Hide" : "Show"}
+  </Button>
+</InlineStack>
+
+<Collapsible open={openData} id={`${insight.id}-data`}>
+  <Box
+    padding="300"
+    background="bg-surface-tertiary"
+    borderWidth="025"
+    borderColor="border"
+    borderRadius="200"
+  >
+    <Text as="p" tone="subdued">
+      {JSON.stringify(snapshot, null, 2)}
+    </Text>
+  </Box>
+</Collapsible>
+
             </BlockStack>
           </Collapsible>
         </BlockStack>
