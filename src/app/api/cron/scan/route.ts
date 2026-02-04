@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  * Authorization: Bearer <CRON_SECRET>
  */
 function requireCronAuth(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
+  const secret = req.nextUrl.searchParams.get("secret") || process.env.CRON_SECRET;
   if (!secret) {
     // If you haven't set CRON_SECRET yet, fail closed so you don't accidentally expose this in prod.
     throw new Error("CRON_SECRET not configured");

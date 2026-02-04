@@ -1,11 +1,9 @@
-{
+
+ {
   "crons": [
     {
-      "path": "/api/cron/scan",
-      "schedule": "0 16 * * *",
-      "headers": {
-        "Authorization": "SHOPIFY-MERCH-PULSE"
-      }
+      "path": "/api/cron/scan?secret=SHOPIFY_MERCH_PULSE",
+      "schedule": "0 16 * * *"
     }
   ]
 }
