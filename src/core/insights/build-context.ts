@@ -3,42 +3,49 @@ import type { InsightContext } from "./context";
 export function buildInsightContext(shopId: string, now: Date, data: any): InsightContext {
   const shopTimezone = data?.shop?.ianaTimezone || "UTC";
 
-  const orders = (data?.orders?.edges || []).map((e: any) => ({
-    id: e.node.id,
-    created_at: e.node.createdAt,
-    cancelled_at: e.node.cancelledAt,
-    total_price: Number(e.node.totalPriceSet?.shopMoney?.amount || 0),
+  // Orders (minimal shape used by sales rhythm drift)
+  const orderEdges = Array.isArray(data?.orders?.edges) ? data.orders.edges : [];
+  const orders = orderEdges.map((e: any) => ({
+    id: e?.node?.id,
+    created_at: e?.node?.createdAt,
+    cancelled_at: e?.node?.cancelledAt ?? null,
+    total_price: Number(e?.node?.totalPriceSet?.shopMoney?.amount || 0),
   }));
 
-  // Revenue per product from line items (historical)
+  // Revenue per product from line items (used by velocity)
   const revenueByProduct: Record<string, number> = {};
-  for (const e of data?.orders?.edges || []) {
-    for (const li of e.node.lineItems?.edges || []) {
-      const productId = li.node.product?.id;
+  for (const e of orderEdges) {
+    const o = e?.node;
+    if (!o || o.cancelledAt) continue;
+    const liEdges = Array.isArray(o?.lineItems?.edges) ? o.lineItems.edges : [];
+    for (const liE of liEdges) {
+      const li = liE?.node;
+      const productId = li?.product?.id;
       if (!productId) continue;
-      const amount = Number(li.node.originalTotalSet?.shopMoney?.amount || 0);
+      const amount = Number(li?.originalTotalSet?.shopMoney?.amount || 0);
       revenueByProduct[productId] = (revenueByProduct[productId] || 0) + amount;
     }
   }
 
-  const productEdges = data?.products?.edges ?? [];
-  const productNodes = Array.isArray(productEdges)
-    ? productEdges.map((e: any) => e?.node).filter(Boolean)
-    : [];
+  // Products from products.edges
+  const productEdges = Array.isArray(data?.products?.edges) ? data.products.edges : [];
+  const products = productEdges
+    .map((e: any) => e?.node)
+    .filter(Boolean)
+    .map((p: any) => {
+      const inv = Number(p?.totalInventory ?? 0);
+      const price = Number(p?.priceRangeV2?.minVariantPrice?.amount ?? 0);
+      const id = String(p?.id || "");
+      const title = String(p?.title || "Untitled product");
 
-  const products = productNodes.map((p: any) => {
-    const price = Number(p?.priceRangeV2?.minVariantPrice?.amount || 0);
-    const inv = Number(p?.totalInventory ?? 0);
-    const revenue = revenueByProduct[p?.id] || 0;
-
-    return {
-      id: p?.id,
-      title: p?.title || "Untitled product",
-      price: Number.isFinite(price) ? price : 0,
-      inventory_quantity: Number.isFinite(inv) ? inv : 0,
-      historical_revenue: Number.isFinite(revenue) ? revenue : 0,
-    };
-  });
+      return {
+        id,
+        title,
+        price: Number.isFinite(price) ? price : 0,
+        inventory_quantity: Number.isFinite(inv) ? inv : 0,
+        historical_revenue: Number.isFinite(revenueByProduct[id] || 0) ? revenueByProduct[id] || 0 : 0,
+      };
+    });
 
   return {
     shopId,

@@ -6,8 +6,6 @@ import { buildInsightContext } from "@/core/insights/build-context";
 import { evaluateSalesRhythmDrift } from "@/core/insights/sales-rhythm-drift";
 import { evaluateInventoryVelocityRisk } from "@/core/insights/inventory-velocity-risk";
 
-import { getActionableInsights } from "@/core/digest/get-actionable-insights";
-import { renderDailyEmail } from "@/core/digest/render-daily-email";
 import { sendDailyDigestEmail } from "@/lib/email";
 
 type Severity = "low" | "medium" | "high";
@@ -28,7 +26,7 @@ const GUARD_HOURS: Record<string, number> = {
   inventory_velocity_risk: 6,
   sales_rhythm_drift: 6,
   dead_inventory: 24 * 7,
-  price_volatility_risk: 24, // keep sane default; you already have this insight
+  price_volatility_risk: 24,
 };
 
 type Confidence = "high" | "medium" | "low";
@@ -143,8 +141,7 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
         })
       : null;
 
-  const items_full =
-    Array.isArray(out.items) && out.items.length ? out.items.slice(0, 25) : null;
+  const items_full = Array.isArray(out.items) && out.items.length ? out.items.slice(0, 25) : null;
 
   return {
     shop_id: shopId,
@@ -156,12 +153,10 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
     data_snapshot: {
       confidence: out.confidence,
       evaluated_at: out.evaluated_at,
-      // promote for UI
       indicators: out.indicators ?? null,
       metrics: out.metrics ?? null,
       items_preview,
       items: items_full,
-      // keep raw for advanced view/debug
       raw: out.raw,
     },
   };
@@ -231,6 +226,46 @@ async function alreadyInsertedWithin(shopId: string, type: string, hours: number
   return Array.isArray(data) && data.length > 0;
 }
 
+// -------- Local digest helpers (replaces missing imports) --------
+
+async function getActionableInsightsForEmail(shopId: string) {
+  // Keep it simple: latest insights, ordered by severity + recency.
+  // No extra guards; your time-guards already prevent spam.
+  const { data, error } = await supabase
+    .from("insights")
+    .select("id,type,title,description,severity,suggested_action,data_snapshot,created_at")
+    .eq("shop_id", shopId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error) return [];
+  return Array.isArray(data) ? data : [];
+}
+
+function renderDailyEmailText(args: { shopDomain: string; insights: any[] }) {
+  const lines: string[] = [];
+  lines.push(`MerchPulse daily digest — ${args.shopDomain}`);
+  lines.push("");
+  lines.push(`Issues found: ${args.insights.length}`);
+  lines.push("");
+
+  for (const i of args.insights) {
+    const sev = String(i.severity || "medium").toUpperCase();
+    lines.push(`[${sev}] ${i.title}`);
+    if (i.description) lines.push(`- ${String(i.description)}`);
+    if (i.suggested_action) lines.push(`- Action: ${String(i.suggested_action)}`);
+    const preview = i?.data_snapshot?.items_preview;
+    if (Array.isArray(preview) && preview.length) {
+      lines.push(`- Items: ${preview.map((x: any) => x?.title || "Item").join(", ")}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("—");
+  lines.push("Open your Shopify Admin → Apps → MerchPulse to review details.");
+  return lines.join("\n");
+}
+
 // ---- Inventory pressure ----
 function evaluateInventoryPressureFromShopifyData(data: any) {
   const edges = data?.products?.edges ?? [];
@@ -277,10 +312,7 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
 }
 
 // ---- Dead inventory ----
-function evaluateDeadInventoryFromShopifyData(
-  data: any,
-  opts?: { windowDays?: number; minStock?: number }
-) {
+function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: number; minStock?: number }) {
   const WINDOW_DAYS = opts?.windowDays ?? 30;
   const MIN_STOCK = opts?.minStock ?? 10;
   const SLOW_MOVER_DAYS = 90;
@@ -348,8 +380,7 @@ function evaluateDeadInventoryFromShopifyData(
 
     let bucket: Bucket | null = null;
     if (!everSold) bucket = "never_sold";
-    else if (lastSaleMs && lastSaleMs < cutoff30Ms)
-      bucket = lastSaleMs >= cutoff90Ms ? "slow_mover" : "stopped_selling";
+    else if (lastSaleMs && lastSaleMs < cutoff30Ms) bucket = lastSaleMs >= cutoff90Ms ? "slow_mover" : "stopped_selling";
 
     if (!bucket) continue;
 
@@ -373,8 +404,7 @@ function evaluateDeadInventoryFromShopifyData(
   deadItems.sort((a, b) => b.cash_trapped_estimate - a.cash_trapped_estimate);
 
   const totalTrapped = deadItems.reduce((sum, x) => sum + x.cash_trapped_estimate, 0);
-  const severity: "high" | "medium" | "low" =
-    totalTrapped >= 500 ? "high" : deadItems.length >= 3 ? "medium" : "low";
+  const severity: "high" | "medium" | "low" = totalTrapped >= 500 ? "high" : deadItems.length >= 3 ? "medium" : "low";
 
   return {
     key: "dead_inventory",
@@ -416,6 +446,7 @@ export async function runScanForShop(args: {
     variables: { ordersQuery },
   });
 
+  // NOTE: your context uses shopId: string; passing shop domain is fine.
   const ctx = buildInsightContext(args.shopDomain, new Date(), data);
 
   const candidatesRaw: any[] = [];
@@ -458,10 +489,7 @@ export async function runScanForShop(args: {
   }
 
   if (inserts.length > 0) {
-    const { error: upsertErr } = await supabase
-      .from("insights")
-      .upsert(inserts, { onConflict: "shop_id,type" });
-
+    const { error: upsertErr } = await supabase.from("insights").upsert(inserts, { onConflict: "shop_id,type" });
     if (upsertErr) throw new Error(`Upsert failed: ${upsertErr.message}`);
   }
 
@@ -480,7 +508,7 @@ export async function runScanForShop(args: {
   const shopTimezone = (data as any)?.shop?.ianaTimezone || "UTC";
   await writeScanRun({ shopId: args.shopId, shopTimezone, status: "ok", summary });
 
-  // Email only on auto runs, and only if enabled + actionable.
+  // Email only on auto runs, and only if enabled + there is at least 1 insight.
   if (args.mode === "auto") {
     try {
       const { data: settings } = await supabase
@@ -490,10 +518,10 @@ export async function runScanForShop(args: {
         .maybeSingle();
 
       if (settings?.daily_enabled && settings?.email) {
-        const actionable = await getActionableInsights(args.shopId);
+        const actionable = await getActionableInsightsForEmail(args.shopId);
         if (Array.isArray(actionable) && actionable.length > 0) {
           const subject = `MerchPulse — ${actionable.length} issue${actionable.length > 1 ? "s" : ""} need attention`;
-          const text = renderDailyEmail({ shopDomain: args.shopDomain, insights: actionable });
+          const text = renderDailyEmailText({ shopDomain: args.shopDomain, insights: actionable });
           await sendDailyDigestEmail({ to: settings.email, subject, body: text });
         }
       }
