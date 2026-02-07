@@ -25,25 +25,42 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing shop context" }, { status: 401 });
     }
 
+    // Optional: allow caller to specify mode, but default to manual
+    let mode: "manual" | "auto" = "manual";
+    try {
+      const body = await req.json().catch(() => null);
+      if (body?.mode === "auto") mode = "auto";
+    } catch {}
+
     const { data: shopRow, error: shopErr } = await supabase
       .from("shops")
       .select("id, shop_domain, access_token")
       .eq("shop_domain", shopDomain)
       .maybeSingle();
 
-    if (shopErr) return NextResponse.json({ error: "Failed to read shop", details: shopErr.message }, { status: 500 });
-    if (!shopRow?.id || !shopRow?.access_token)
-      return NextResponse.json({ error: "Shop not installed or missing access token", shop: shopDomain }, { status: 403 });
+    if (shopErr) {
+      return NextResponse.json({ error: "Failed to read shop", details: shopErr.message }, { status: 500 });
+    }
+
+    if (!shopRow?.id || !shopRow?.access_token) {
+      return NextResponse.json(
+        { error: "Shop not installed or missing access token", shop: shopDomain },
+        { status: 403 }
+      );
+    }
 
     const summary = await runScanForShop({
       shopId: shopRow.id,
       shopDomain: shopRow.shop_domain,
       accessToken: shopRow.access_token,
-      mode: "manual",
+      mode,
     });
 
     return NextResponse.json(summary);
   } catch (e: any) {
-    return NextResponse.json({ error: "Failed to run insights", details: e?.message || String(e) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to run insights", details: e?.message || String(e) },
+      { status: 500 }
+    );
   }
 }

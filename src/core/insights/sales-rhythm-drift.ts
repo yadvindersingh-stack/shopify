@@ -1,3 +1,5 @@
+// src/core/insights/sales-rhythm-drift.ts
+
 export type IndicatorResult = {
   key: string;
   label: string;
@@ -11,6 +13,7 @@ export type SalesRhythmDriftResult = {
   title: string;
   severity: "low" | "medium" | "high";
   summary: string;
+  suggested_action: string;
   indicators: IndicatorResult[];
   metrics: {
     timezone: string;
@@ -29,6 +32,10 @@ export type SalesRhythmDriftResult = {
     guard_minutes: number;
   };
   evaluated_at: string;
+
+  // optional items list (for UI preview)
+  items?: Array<{ title: string; inv?: number; revenue?: number }>;
+  evidence?: Record<string, any>;
 };
 
 export type InsightContext = {
@@ -47,6 +54,8 @@ export type InsightContext = {
     title: string;
     price: number;
     inventory_quantity: number;
+    // optional (enriched by build-context)
+    historical_revenue?: number;
   }[];
 
   analytics?: {
@@ -76,14 +85,13 @@ function toLocalParts(date: Date, timeZone: string) {
     second: "2-digit",
     hour12: false,
   });
-
   const parts = dtf.formatToParts(date);
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
   return {
     y: Number(get("year")),
     m: Number(get("month")),
     d: Number(get("day")),
-    weekday: get("weekday"), // Mon/Tue...
+    weekday: get("weekday"),
     hh: Number(get("hour")),
     mm: Number(get("minute")),
     ss: Number(get("second")),
@@ -109,12 +117,17 @@ function sameLocalWeekday(iso: string, timeZone: string, weekday: string) {
   return p.weekday === weekday;
 }
 
+function safeNumber(n: any) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : 0;
+}
+
 export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<SalesRhythmDriftResult | null> {
   const tz = ctx.shopTimezone || "UTC";
   const now = ctx.now ?? new Date();
 
-  // ✅ 6-hour guard in SHOP TIMEZONE
-  const guardMinutes = 6 * 60; // 360
+  // Guard: don’t alert before local 06:00
+  const guardMinutes = 6 * 60;
   const nowLocalMin = minutesSinceMidnight(now, tz);
   if (nowLocalMin < guardMinutes) return null;
 
@@ -129,169 +142,171 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
   );
   const ordersTodayCount = ordersToday.length;
 
-  // Baseline: same weekday in provided window, count orders up to same time-of-day, per local day
-  const baselineDays = new Map<string, number>(); // dateKey -> count
+  // Build two baselines:
+  // - same weekday last N occurrences
+  // - last 14 days any weekday (fallback)
+  const perDayCountsAll = new Map<string, number>();
+  const perDayCountsSameWk = new Map<string, number>();
 
   for (const o of ctx.orders) {
     if (o.cancelled_at) continue;
-    if (!sameLocalWeekday(o.created_at, tz, nowWeekday)) continue;
-
     const m = minutesSinceMidnight(new Date(o.created_at), tz);
     if (m > nowLocalMin) continue;
 
     const dk = localDateKey(o.created_at, tz);
-    baselineDays.set(dk, (baselineDays.get(dk) ?? 0) + 1);
+    perDayCountsAll.set(dk, (perDayCountsAll.get(dk) ?? 0) + 1);
+
+    if (sameLocalWeekday(o.created_at, tz, nowWeekday)) {
+      perDayCountsSameWk.set(dk, (perDayCountsSameWk.get(dk) ?? 0) + 1);
+    }
   }
 
-  // Keep last 8 occurrences (≈ 8 weeks)
-  // Baseline candidates: per local day counts up to same time-of-day
-const perDayCountsAll = new Map<string, number>();      // any weekday
-const perDayCountsSameWk = new Map<string, number>();   // same weekday only
-
-for (const o of ctx.orders) {
-  if (o.cancelled_at) continue;
-
-  const m = minutesSinceMidnight(new Date(o.created_at), tz);
-  if (m > nowLocalMin) continue;
-
-  const dk = localDateKey(o.created_at, tz);
-  perDayCountsAll.set(dk, (perDayCountsAll.get(dk) ?? 0) + 1);
-
-  if (sameLocalWeekday(o.created_at, tz, nowWeekday)) {
-    perDayCountsSameWk.set(dk, (perDayCountsSameWk.get(dk) ?? 0) + 1);
+  function lastNCounts(map: Map<string, number>, n: number) {
+    return Array.from(map.entries())
+      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+      .slice(0, n)
+      .map(([, v]) => v);
   }
-}
 
-// helper to get last N day counts
-function lastNCounts(map: Map<string, number>, n: number) {
-  return Array.from(map.entries())
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .slice(0, n)
-    .map(([, v]) => v);
-}
+  const sameWk = lastNCounts(perDayCountsSameWk, 8);
+  const anyDay14 = lastNCounts(perDayCountsAll, 14);
 
-const sameWk = lastNCounts(perDayCountsSameWk, 8);   // ~8 occurrences
-const anyDay14 = lastNCounts(perDayCountsAll, 14);   // last 14 days
+  let baselineCounts: number[] = [];
+  let comparedWindow = "";
 
-let baselineCounts: number[] = [];
-let comparedWindow = "";
+  if (sameWk.length >= 3) {
+    baselineCounts = sameWk;
+    comparedWindow = `Same weekday, last ${sameWk.length} occurrences, up to current time-of-day`;
+  } else if (anyDay14.length >= 3) {
+    baselineCounts = anyDay14;
+    comparedWindow = `Any weekday, last ${anyDay14.length} days, up to current time-of-day`;
+  } else {
+    // Not enough data to be confident
+    return null;
+  }
 
-// Tier selection (prod-grade)
-if (sameWk.length >= 3) {
-  baselineCounts = sameWk;
-  comparedWindow = `Same weekday, last ${sameWk.length} occurrences, up to current time-of-day`;
-} else if (anyDay14.length >= 3) {
-  baselineCounts = anyDay14;
-  comparedWindow = `Any weekday, last ${anyDay14.length} days, up to current time-of-day (fallback)`;
-} else if (anyDay14.length >= 2) {
-  baselineCounts = anyDay14;
-  comparedWindow = `Any weekday, last ${anyDay14.length} days, up to current time-of-day (minimum fallback)`;
-} else {
-  return null; // truly insufficient
-}
+  const sorted = baselineCounts.slice().sort((a, b) => a - b);
+  const baselineMedian = quantile(sorted, 0.5);
+  const baselineP25 = quantile(sorted, 0.25);
+  const baselineP75 = quantile(sorted, 0.75);
 
+  // “Expected low/high” band (robust-ish)
+  const expectedLow = Math.max(0, Math.floor(baselineP25));
+  const expectedHigh = Math.ceil(baselineP75);
 
+  // Trigger condition: today below expectedLow
+  if (ordersTodayCount >= expectedLow) return null;
 
-  const sorted = [...baselineCounts].sort((a, b) => a - b);
-  if (sorted.length < 3) return null;
+  const delta = baselineMedian - ordersTodayCount;
 
-  const p25 = Math.round(quantile(sorted, 0.25));
-  const p50 = Math.round(quantile(sorted, 0.5));
-  const p75 = Math.round(quantile(sorted, 0.75));
+  const severity: "low" | "medium" | "high" =
+    delta >= 4 ? "high" : delta >= 2 ? "medium" : "low";
 
-  const EARLY_STORE_MIN_EXPECTED = 3;
+  // ---- Add product context (best-sellers + low stock among best sellers) ----
+  const products = Array.isArray(ctx.products) ? ctx.products : [];
+  const ranked = products
+    .map((p) => ({
+      id: p.id,
+      title: p.title,
+      inv: safeNumber(p.inventory_quantity),
+      revenue: safeNumber((p as any).historical_revenue ?? p.historical_revenue ?? 0),
+    }))
+    .sort((a, b) => b.revenue - a.revenue);
 
-const effectiveP25 = Math.max(p25, EARLY_STORE_MIN_EXPECTED);
-const effectiveP50 = Math.max(p50, EARLY_STORE_MIN_EXPECTED);
-  const expectedLow = effectiveP25;
-  const expectedHigh = p75;
-  
+  const topSellers = ranked.filter((p) => p.revenue > 0).slice(0, 5);
+  const lowStockTopSellers = topSellers.filter((p) => p.inv <= 3).slice(0, 3);
 
-
-  // Severity rules (your chosen Option A)
-  let severity: "low" | "medium" | "high" = "low";
-  const highThreshold = Math.max(1, Math.floor(effectiveP25 / 2));
-
-
-  if (ordersTodayCount < expectedLow) severity = "medium";
-  if ((ordersTodayCount === 0 && effectiveP50 >= 3) || ordersTodayCount < highThreshold) severity = "high";
-
-  if (severity === "low") return null;
-
-  // Indicators (v1)
   const indicators: IndicatorResult[] = [];
 
-  const sessionsToday = ctx.analytics?.sessions_today_so_far ?? null;
-  const sessionsBaseline = ctx.analytics?.sessions_baseline_median ?? null;
+  indicators.push({
+    key: "order_count_drop",
+    label: "Orders are below your usual pace",
+    status: "likely",
+    confidence: severity === "high" ? "high" : "medium",
+    evidence: `So far today: ${ordersTodayCount} orders. Typical (median) by this time: ${Math.round(
+      baselineMedian
+    )}. Expected range: ${expectedLow}–${expectedHigh}.`,
+  });
 
-  if (sessionsToday != null && sessionsBaseline != null && sessionsBaseline > 0) {
-    const ratio = sessionsToday / sessionsBaseline;
-    let status: IndicatorResult["status"] = "unlikely";
-    let confidence: IndicatorResult["confidence"] = "medium";
-    if (ratio < 0.7) status = "likely";
-    else if (ratio < 0.9) status = "possible";
+  indicators.push({
+    key: "needs_attribution",
+    label: "Cause not attributed yet (traffic / ads / checkout / stock)",
+    status: "unknown",
+    confidence: "low",
+    evidence:
+      "This check currently only compares order pace. Next: we’ll layer in traffic and checkout signals to pinpoint why (e.g., fewer sessions vs. conversion drop).",
+  });
 
+  if (lowStockTopSellers.length > 0) {
     indicators.push({
-      key: "traffic_drop",
-      label: "Traffic today is lower than normal",
-      status,
-      confidence,
-      evidence: `Sessions so far: ${sessionsToday} vs baseline median ${sessionsBaseline} for this time.`,
-    });
-  } else {
-    indicators.push({
-      key: "traffic_drop",
-      label: "Traffic today is lower than normal",
-      status: "unknown",
-      confidence: "low",
-      evidence: "Traffic baseline not available yet (analytics baseline not computed in v1).",
+      key: "top_seller_stock_risk",
+      label: "Some top sellers are low on stock",
+      status: "possible",
+      confidence: "medium",
+      evidence:
+        `Low stock on best sellers: ${lowStockTopSellers
+          .map((p) => `${p.title} (${p.inv})`)
+          .join(", ")}.`,
     });
   }
 
-  const lowStock = ctx.products.filter((p) => (p.inventory_quantity ?? 0) <= 3).slice(0, 5);
-  indicators.push({
-    key: "stock_pressure",
-    label: "Inventory pressure on best sellers",
-    status: lowStock.length >= 2 ? "possible" : "unlikely",
-    confidence: lowStock.length >= 2 ? "medium" : "low",
-    evidence: lowStock.length
-      ? `Low stock (≤3): ${lowStock.map((p) => p.title).slice(0, 3).join(", ")}`
-      : "No obvious low-stock signal from current inventory.",
-  });
+  const title =
+    severity === "high"
+      ? "Orders are unusually low today"
+      : "Orders are running behind today";
 
-  indicators.push({
-    key: "price_integrity",
-    label: "Recent price changes",
-    status: "unknown",
-    confidence: "low",
-    evidence: "Price-change evaluation not enabled yet (no price history in v1).",
-  });
+  const summaryParts: string[] = [];
+  summaryParts.push(
+    `You have ${ordersTodayCount} orders so far today. By this time, you usually see about ${Math.round(
+      baselineMedian
+    )}.`
+  );
 
-  //const comparedWindow = `Same weekday, last ${sorted.length} occurrences, up to current time-of-day`;
+  if (lowStockTopSellers.length > 0) {
+    summaryParts.push(
+      `A few best sellers are low on stock (${lowStockTopSellers
+        .map((p) => `${p.title} (${p.inv})`)
+        .join(", ")}), which can suppress sales.`
+    );
+  }
 
-  const summary =
-    `Orders so far today (${ordersTodayCount}) are below your normal range for this time ` +
-    `(${expectedLow}–${expectedHigh}, median ${p50}).`;
+  const suggested_action =
+    "Quick check: confirm checkout is working, verify active campaigns are running, and ensure best sellers are in stock. If you see low stock on a top seller, restock or temporarily shift traffic (collections/ads) to an in-stock alternative.";
+
+  const evaluatedAt = new Date().toISOString();
+  const nowLocal = toLocalParts(now, tz);
+  const nowLocalIso = `${nowLocal.y}-${String(nowLocal.m).padStart(2, "0")}-${String(nowLocal.d).padStart(
+    2,
+    "0"
+  )}T${String(nowLocal.hh).padStart(2, "0")}:${String(nowLocal.mm).padStart(2, "0")}:${String(
+    nowLocal.ss
+  ).padStart(2, "0")}`;
 
   return {
     key: "sales_rhythm_drift",
-    title: severity === "high" ? "Orders are unusually low today" : "Orders are trending lower than normal",
+    title,
     severity,
-    summary,
+    summary: summaryParts.join(" "),
+    suggested_action,
     indicators,
     metrics: {
       timezone: tz,
       compared_window: comparedWindow,
-      now_local_iso: now.toISOString(),
+      now_local_iso: nowLocalIso,
       orders_today_so_far: ordersTodayCount,
-      baseline_median: p50,
-      baseline_p25: p25,
-      baseline_p75: p75,
+      baseline_median: Math.round(baselineMedian * 100) / 100,
+      baseline_p25: Math.round(baselineP25 * 100) / 100,
+      baseline_p75: Math.round(baselineP75 * 100) / 100,
       expected_low: expectedLow,
       expected_high: expectedHigh,
-      baseline_days_count: sorted.length,
+      baseline_days_count: baselineCounts.length,
       guard_minutes: guardMinutes,
     },
-    evaluated_at: new Date().toISOString(),
+    evidence: {
+      top_sellers: topSellers.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue })),
+      low_stock_top_sellers: lowStockTopSellers.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue })),
+    },
+    items: lowStockTopSellers.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue })),
+    evaluated_at: evaluatedAt,
   };
 }

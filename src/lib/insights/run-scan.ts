@@ -28,25 +28,23 @@ const GUARD_HOURS: Record<string, number> = {
   inventory_velocity_risk: 6,
   sales_rhythm_drift: 6,
   dead_inventory: 24 * 7,
+  price_volatility_risk: 24, // keep sane default; you already have this insight
 };
 
-// -----------------------------
-// D1: Canonical Insight Contract
-// -----------------------------
 type Confidence = "high" | "medium" | "low";
 
 type InsightOutput = {
   type: string;
   title: string;
-  description: string; // human readable (what we saw)
+  description: string;
   severity: Severity;
-  suggested_action: string; // must exist to insert
-  confidence: Confidence; // stored in data_snapshot
-  evidence?: Record<string, any>; // optional but cleaned
+  suggested_action: string;
+  confidence: Confidence;
+  indicators?: any[];
   metrics?: Record<string, any>;
-  items?: any[]; // optional
-  evaluated_at: string; // ISO
-  raw: any; // original evaluator output
+  items?: any[];
+  evaluated_at: string;
+  raw: any;
 };
 
 function normalizeSeverity(v: any): Severity {
@@ -54,29 +52,42 @@ function normalizeSeverity(v: any): Severity {
 }
 
 function normalizeConfidence(v: any, type: string): Confidence {
-  // Heuristic defaults (Phase D)
   const as = v === "high" || v === "medium" || v === "low" ? v : null;
   if (as) return as;
 
   if (type === "inventory_pressure") return "high";
   if (type === "dead_inventory") return "medium";
-  if (type === "price_volatility") return "medium";
+  if (type === "price_volatility_risk") return "medium";
   if (type === "sales_rhythm_drift") return "low";
   if (type === "inventory_velocity_risk") return "medium";
   return "medium";
 }
 
 function cleanObject(obj: any): Record<string, any> | undefined {
-  if (!obj || typeof obj !== "object") return undefined;
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return undefined;
   const out: Record<string, any> = {};
   for (const [k, v] of Object.entries(obj)) {
     if (v === null || v === undefined) continue;
     if (typeof v === "number") out[k] = v;
     else if (typeof v === "string" && v.trim()) out[k] = v.trim();
-    else if (Array.isArray(v) && v.length) out[k] = v.slice(0, 10);
+    else if (Array.isArray(v) && v.length) out[k] = v.slice(0, 50);
     else if (typeof v === "object" && Object.keys(v).length) out[k] = v;
   }
   return Object.keys(out).length ? out : undefined;
+}
+
+function fallbackSuggestedAction(type: string): string {
+  if (type === "inventory_pressure")
+    return "Restock low items, pause ads for out-of-stock products, and add back-in-stock expectations.";
+  if (type === "dead_inventory")
+    return "Hide from key collections, bundle with a bestseller, test a small discount, and avoid reordering until sell-through improves.";
+  if (type === "inventory_velocity_risk")
+    return "Reorder the fastest movers early, and adjust merchandising so high-velocity items don’t stock out.";
+  if (type === "price_volatility_risk")
+    return "Check recent price edits, confirm promo rules, and validate the storefront price matches your intended strategy.";
+  if (type === "sales_rhythm_drift")
+    return "Check sessions and conversion today, verify discount codes and checkout, and compare against your normal sales rhythm.";
+  return "Review the flagged data and take action to reduce revenue or trust risk.";
 }
 
 function toInsightOutput(input: any): InsightOutput | null {
@@ -85,30 +96,25 @@ function toInsightOutput(input: any): InsightOutput | null {
   const type = String(input?.type || input?.key || "").trim();
   if (!type) return null;
 
-  const title = String(input?.title || "").trim();
-  const description = String(input?.description || input?.summary || "").trim();
+  const title = String(input?.title || "").trim() || `Issue detected: ${type.replaceAll("_", " ")}`;
 
-  const suggested_action = String(
-    input?.suggested_action || input?.suggestedAction || ""
-  ).trim();
+  const description =
+    String(input?.description || "").trim() ||
+    String(input?.summary || "").trim() ||
+    "We detected a pattern worth reviewing.";
 
-  // D1 gate: if we can’t explain & act, we do not persist.
-  if (!title || !description || !suggested_action) return null;
+  const suggested_action =
+    String(input?.suggested_action || input?.suggestedAction || "").trim() ||
+    fallbackSuggestedAction(type);
 
   const severity = normalizeSeverity(input?.severity);
-
-  const metrics = cleanObject(input?.metrics);
-  const evidence =
-    cleanObject(input?.evidence) ||
-    // If you have "indicators", it's still useful evidence
-    cleanObject({ indicators: input?.indicators }) ||
-    undefined;
-
   const evaluated_at = String(input?.evaluated_at || input?.evaluatedAt || new Date().toISOString());
 
-  const confidence = normalizeConfidence(input?.confidence, type);
-
+  const indicators = Array.isArray(input?.indicators) ? input.indicators : undefined;
+  const metrics = cleanObject(input?.metrics);
   const items = Array.isArray(input?.items) ? input.items : undefined;
+
+  const confidence = normalizeConfidence(input?.confidence, type);
 
   return {
     type,
@@ -117,7 +123,7 @@ function toInsightOutput(input: any): InsightOutput | null {
     severity,
     suggested_action,
     confidence,
-    evidence,
+    indicators,
     metrics,
     items,
     evaluated_at,
@@ -126,18 +132,19 @@ function toInsightOutput(input: any): InsightOutput | null {
 }
 
 function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
-  // keep raw, but provide stable structured fields for UI/email
   const items_preview =
     Array.isArray(out.items) && out.items.length
       ? out.items.slice(0, 5).map((x: any) => {
           if (!x || typeof x !== "object") return x;
-          // attempt to keep it compact
           const t = x.title || x.name || x.product_title;
           const inv = x.inv ?? x.inventory ?? x.totalInventory ?? x.inventory_quantity;
           const days = x.days_since_last_sale ?? x.days ?? x.daysSince;
-          return { title: t, inv, days };
+          return { title: t, inv, days, bucket: x.bucket };
         })
-      : undefined;
+      : null;
+
+  const items_full =
+    Array.isArray(out.items) && out.items.length ? out.items.slice(0, 25) : null;
 
   return {
     shop_id: shopId,
@@ -148,11 +155,14 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
     suggested_action: out.suggested_action,
     data_snapshot: {
       confidence: out.confidence,
-      evidence: out.evidence ?? null,
-      metrics: out.metrics ?? null,
-      items_preview: items_preview ?? null,
       evaluated_at: out.evaluated_at,
-      raw: out.raw, // keep raw for Advanced view
+      // promote for UI
+      indicators: out.indicators ?? null,
+      metrics: out.metrics ?? null,
+      items_preview,
+      items: items_full,
+      // keep raw for advanced view/debug
+      raw: out.raw,
     },
   };
 }
@@ -177,7 +187,6 @@ function getNext11AmISO(shopTimezone: string) {
   const d = Number(get("day"));
   const hour = Number(get("hour"));
 
-  // candidate: today 11:00 "shop-local" date (stored as UTC)
   const candidateUtc = new Date(Date.UTC(y, m - 1, d, 11, 0, 0));
   if (Number.isFinite(hour) && hour >= 11) candidateUtc.setUTCDate(candidateUtc.getUTCDate() + 1);
 
@@ -205,7 +214,6 @@ async function writeScanRun(args: {
     { onConflict: "shop_id" }
   );
 
-  // Fail open: scan must not die because scan_runs write failed
   if (error) console.log("SCAN_RUN_WRITE_FAILED", error.message);
 }
 
@@ -219,11 +227,11 @@ async function alreadyInsertedWithin(shopId: string, type: string, hours: number
     .gte("created_at", since)
     .limit(1);
 
-  if (error) return false; // fail open
+  if (error) return false;
   return Array.isArray(data) && data.length > 0;
 }
 
-// ---- Inventory pressure + Dead inventory (keep same logic you already validated) ----
+// ---- Inventory pressure ----
 function evaluateInventoryPressureFromShopifyData(data: any) {
   const edges = data?.products?.edges ?? [];
   const nodes = Array.isArray(edges) ? edges.map((e: any) => e?.node).filter(Boolean) : [];
@@ -239,7 +247,6 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
     .sort((a, b) => a.inv - b.inv);
 
   const low = normalized.filter((p) => p.inv <= 2);
-
   if (!low.length) return null;
 
   const hasZero = low.some((p) => p.inv === 0);
@@ -258,7 +265,7 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
     suggested_action: hasZero
       ? "Restock or set expectations (preorder/backorder). Pause ads for out-of-stock items."
       : "Restock soon or adjust merchandising to avoid stockouts.",
-    evidence: {
+    metrics: {
       low_sku_count: low.length,
       zero_inventory_count: low.filter((p) => p.inv === 0).length,
       min_inventory: low[0]?.inv ?? null,
@@ -269,7 +276,11 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
   };
 }
 
-function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: number; minStock?: number }) {
+// ---- Dead inventory ----
+function evaluateDeadInventoryFromShopifyData(
+  data: any,
+  opts?: { windowDays?: number; minStock?: number }
+) {
   const WINDOW_DAYS = opts?.windowDays ?? 30;
   const MIN_STOCK = opts?.minStock ?? 10;
   const SLOW_MOVER_DAYS = 90;
@@ -337,7 +348,8 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
 
     let bucket: Bucket | null = null;
     if (!everSold) bucket = "never_sold";
-    else if (lastSaleMs && lastSaleMs < cutoff30Ms) bucket = lastSaleMs >= cutoff90Ms ? "slow_mover" : "stopped_selling";
+    else if (lastSaleMs && lastSaleMs < cutoff30Ms)
+      bucket = lastSaleMs >= cutoff90Ms ? "slow_mover" : "stopped_selling";
 
     if (!bucket) continue;
 
@@ -361,7 +373,8 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
   deadItems.sort((a, b) => b.cash_trapped_estimate - a.cash_trapped_estimate);
 
   const totalTrapped = deadItems.reduce((sum, x) => sum + x.cash_trapped_estimate, 0);
-  const severity: "high" | "medium" | "low" = totalTrapped >= 500 ? "high" : deadItems.length >= 3 ? "medium" : "low";
+  const severity: "high" | "medium" | "low" =
+    totalTrapped >= 500 ? "high" : deadItems.length >= 3 ? "medium" : "low";
 
   return {
     key: "dead_inventory",
@@ -374,22 +387,25 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
       "Hide from key collections, bundle with a bestseller, test a small discount, and avoid reordering until sell-through improves.",
     evaluated_at: now.toISOString(),
     confidence: "medium",
-    evidence: {
+    metrics: {
       dead_sku_count: deadItems.length,
       window_days: WINDOW_DAYS,
       min_stock_threshold: MIN_STOCK,
       total_cash_trapped_estimate: Math.round(totalTrapped * 100) / 100,
     },
-    metrics: { window_days: WINDOW_DAYS, min_stock_threshold: MIN_STOCK },
     items: deadItems,
   };
 }
 
-export async function runScanForShop(args: { shopId: string; shopDomain: string; accessToken: string; mode: ScanMode }) {
+export async function runScanForShop(args: {
+  shopId: string;
+  shopDomain: string;
+  accessToken: string;
+  mode: ScanMode;
+}) {
   const evaluated: string[] = [];
   const skipped: Array<{ type: string; reason: string }> = [];
 
-  // Fetch enough history for your insights
   const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
   const ordersQuery = `created_at:>=${sinceIso}`;
 
@@ -420,14 +436,14 @@ export async function runScanForShop(args: { shopId: string; shopDomain: string;
   evaluated.push("inventory_velocity_risk");
   if (velocity) candidatesRaw.push(velocity);
 
-  // D1: Normalize every candidate into InsightOutput (or skip)
   const inserts: DbInsight[] = [];
+
   for (const raw of candidatesRaw) {
     const out = toInsightOutput(raw);
     const type = String(raw?.key || raw?.type || "unknown");
 
     if (!out) {
-      skipped.push({ type, reason: "contract_incomplete" });
+      skipped.push({ type, reason: "normalize_failed" });
       continue;
     }
 
@@ -442,7 +458,10 @@ export async function runScanForShop(args: { shopId: string; shopDomain: string;
   }
 
   if (inserts.length > 0) {
-    const { error: upsertErr } = await supabase.from("insights").upsert(inserts, { onConflict: "shop_id,type" });
+    const { error: upsertErr } = await supabase
+      .from("insights")
+      .upsert(inserts, { onConflict: "shop_id,type" });
+
     if (upsertErr) throw new Error(`Upsert failed: ${upsertErr.message}`);
   }
 
@@ -461,7 +480,7 @@ export async function runScanForShop(args: { shopId: string; shopDomain: string;
   const shopTimezone = (data as any)?.shop?.ianaTimezone || "UTC";
   await writeScanRun({ shopId: args.shopId, shopTimezone, status: "ok", summary });
 
-  // Email only on automated runs. Fail open.
+  // Email only on auto runs, and only if enabled + actionable.
   if (args.mode === "auto") {
     try {
       const { data: settings } = await supabase
@@ -475,7 +494,7 @@ export async function runScanForShop(args: { shopId: string; shopDomain: string;
         if (Array.isArray(actionable) && actionable.length > 0) {
           const subject = `MerchPulse — ${actionable.length} issue${actionable.length > 1 ? "s" : ""} need attention`;
           const text = renderDailyEmail({ shopDomain: args.shopDomain, insights: actionable });
-          await sendDailyDigestEmail({ to: settings.email, subject: subject, body: text });
+          await sendDailyDigestEmail({ to: settings.email, subject, body: text });
         }
       }
     } catch (e: any) {

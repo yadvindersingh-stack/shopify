@@ -1,10 +1,6 @@
 import type { InsightContext } from "./context";
 
-export function buildInsightContext(
-  shopId: string,
-  now: Date,
-  data: any
-): InsightContext {
+export function buildInsightContext(shopId: string, now: Date, data: any): InsightContext {
   const shopTimezone = data?.shop?.ianaTimezone || "UTC";
 
   const orders = (data?.orders?.edges || []).map((e: any) => ({
@@ -14,9 +10,8 @@ export function buildInsightContext(
     total_price: Number(e.node.totalPriceSet?.shopMoney?.amount || 0),
   }));
 
-  // Historical revenue per product from line items
+  // Revenue per product from line items (historical)
   const revenueByProduct: Record<string, number> = {};
-
   for (const e of data?.orders?.edges || []) {
     for (const li of e.node.lineItems?.edges || []) {
       const productId = li.node.product?.id;
@@ -26,16 +21,24 @@ export function buildInsightContext(
     }
   }
 
-  const variants = data?.productVariants?.edges ?? [];
+  const productEdges = data?.products?.edges ?? [];
+  const productNodes = Array.isArray(productEdges)
+    ? productEdges.map((e: any) => e?.node).filter(Boolean)
+    : [];
 
-const products = variants.map((e: any) => ({
-  id: e.node.product.id,
-  title: e.node.product.title,
-  price: 0, // optional for this insight
-  inventory_quantity: Number(e.node.inventoryQuantity ?? 0),
-  historical_revenue: 0, // optional
-}));
+  const products = productNodes.map((p: any) => {
+    const price = Number(p?.priceRangeV2?.minVariantPrice?.amount || 0);
+    const inv = Number(p?.totalInventory ?? 0);
+    const revenue = revenueByProduct[p?.id] || 0;
 
+    return {
+      id: p?.id,
+      title: p?.title || "Untitled product",
+      price: Number.isFinite(price) ? price : 0,
+      inventory_quantity: Number.isFinite(inv) ? inv : 0,
+      historical_revenue: Number.isFinite(revenue) ? revenue : 0,
+    };
+  });
 
   return {
     shopId,

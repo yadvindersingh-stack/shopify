@@ -1,136 +1,148 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  Badge,
+  Banner,
   BlockStack,
+  Box,
+  Button,
   Card,
+  Divider,
   EmptyState,
   InlineStack,
   Layout,
   Page,
   Spinner,
   Text,
-  Banner,
-  Button,
 } from "@shopify/polaris";
 import InsightCard from "@/components/InsightCard";
 import { buildPathWithHost } from "@/lib/host";
 import { useApiFetch } from "@/hooks/useApiFetch";
-import { formatHumanDateTime } from "@/lib/dates";
 
+type Severity = "high" | "medium" | "low";
 
-type InsightRow = {
+type Insight = {
   id: string;
   type: string;
   title: string;
-  description: string;
-  severity: "high" | "medium" | "low";
-  suggested_action: string;
-  data_snapshot: Record<string, any>;
+  description: string | null;
+  severity: Severity;
+  suggested_action: string | null;
+  data_snapshot: Record<string, any> | null;
   created_at?: string;
 };
 
+type ScanMeta = {
+  last?: string | null;
+  next?: string | null;
+  last_status?: "ok" | "error" | null;
+  last_summary?: any;
+};
+
+function formatHumanDateTime(d: string | Date) {
+  const dt = typeof d === "string" ? new Date(d) : d;
+  // "30 Jan 2026, 11:05"
+  return dt.toLocaleString("en-CA", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function msUntil(iso?: string | null) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  return t - Date.now();
+}
+
+function friendlyCountdown(ms: number) {
+  if (ms <= 0) return "now";
+  const minutes = Math.ceil(ms / 60000);
+  if (minutes < 60) return `in ${minutes} min`;
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 48) return `in ${hours} hr`;
+  const days = Math.ceil(hours / 24);
+  return `in ${days} day${days === 1 ? "" : "s"}`;
+}
+
+function badgeToneForSeverity(sev: Severity) {
+  if (sev === "high") return "critical" as const;
+  if (sev === "medium") return "warning" as const;
+  return "info" as const;
+}
 
 export default function InsightsPage() {
-  const [insights, setInsights] = useState<InsightRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [scanLoading, setScanLoading] = useState(false);
-  const [banner, setBanner] = useState<{ tone: "critical" | "warning" | "success" | "info"; title: string; body?: string } | null>(null);
-  const [setupMissing, setSetupMissing] = useState(false);
-  const [scanMeta, setScanMeta] = useState<{ last?: string | null; next?: string | null }>({});
-
   const router = useRouter();
   const searchParams = useSearchParams();
   const hostParam = searchParams.get("host") || "";
+  const withHost = useCallback((path: string) => buildPathWithHost(path, hostParam), [hostParam]);
+
   const apiFetch = useApiFetch();
-  const bySeverity = useMemo(() => {
-  const high = insights.filter((i) => i.severity === "high");
-  const medium = insights.filter((i) => i.severity === "medium");
-  const low = insights.filter((i) => i.severity === "low");
-  return { high, medium, low };
-}, [insights]);
 
+  const [insights, setInsights] = useState<Insight[]>([]);
+  const [scanMeta, setScanMeta] = useState<ScanMeta>({});
+  const [loading, setLoading] = useState(true);
+  const [scanLoading, setScanLoading] = useState(false);
 
-  const withHost = useCallback(
-    (path: string) => buildPathWithHost(path, hostParam),
-    [hostParam]
-  );
+  const [banner, setBanner] = useState<{ tone: "success" | "critical"; title: string; message?: string } | null>(null);
 
-  const lastScan = useMemo(() => {
-    if (!insights.length) return "No scans yet";
-    const created = insights[0].created_at ? new Date(insights[0].created_at) : null;
-    if (!created) return "No scans yet";
-    const diffMs = Date.now() - created.getTime();
-    const diffMinutes = Math.floor(diffMs / 60000);
-    if (diffMinutes < 1) return "Just now";
-    if (diffMinutes < 60) return `${diffMinutes} minute${diffMinutes === 1 ? "" : "s"} ago`;
-    const diffHours = Math.floor(diffMinutes / 60);
-    if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? "" : "s"} ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
+  const grouped = useMemo(() => {
+    const high = insights.filter((i) => i.severity === "high");
+    const med = insights.filter((i) => i.severity === "medium");
+    const low = insights.filter((i) => i.severity === "low");
+    return { high, med, low };
   }, [insights]);
 
- const scanSubtitle = useMemo(() => {
-  const last = scanMeta.last ? formatHumanDateTime(new Date(scanMeta.last)) : "Never";
-  const next = scanMeta.next ? formatHumanDateTime(new Date(scanMeta.next)) : "Not scheduled";
-  return `Last scan: ${last} · Next scan: ${next}`;
-}, [scanMeta]);
+  const counts = useMemo(() => {
+    return {
+      high: grouped.high.length,
+      medium: grouped.med.length,
+      low: grouped.low.length,
+      total: insights.length,
+    };
+  }, [grouped, insights.length]);
+
+  const scanSubtitle = useMemo(() => {
+    const last = scanMeta.last ? formatHumanDateTime(scanMeta.last) : "Never";
+    const next = scanMeta.next ? formatHumanDateTime(scanMeta.next) : "Not scheduled";
+    const nextMs = msUntil(scanMeta.next);
+    const nextHint = nextMs !== null ? ` (${friendlyCountdown(nextMs)})` : "";
+    return `Last scan: ${last} · Next scan: ${next}${nextHint}`;
+  }, [scanMeta.last, scanMeta.next]);
+
+  const fetchScanMeta = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/scan-status", { cache: "no-store" });
+      if (!res.ok) return;
+      const json = await res.json();
+      setScanMeta({
+        last: json?.last_scan_at ?? null,
+        next: json?.next_scan_at ?? null,
+        last_status: json?.last_scan_status ?? null,
+        last_summary: json?.last_scan_summary ?? null,
+      });
+    } catch {
+      // ignore
+    }
+  }, [apiFetch]);
 
   const fetchInsights = useCallback(async () => {
     setLoading(true);
-    setBanner(null);
-    setSetupMissing(false);
-
     try {
-      // 1) Setup check (do NOT redirect automatically)
-      const setupRes = await apiFetch("/api/setup", { cache: "no-store" });
-
-      if (setupRes.status === 401) {
-        setBanner({ tone: "critical", title: "Missing shop context", body: "Please relaunch this app from Shopify Admin." });
-        return;
-      }
-      if (setupRes.status === 403) {
-        setBanner({ tone: "critical", title: "Shop not installed", body: "Please reinstall the app." });
-        return;
-      }
-
-      let setup: any = {};
-      try {
-        setup = await setupRes.json();
-      } catch {
-        setup = {};
-      }
-
-      if (!setup?.email) {
-        setSetupMissing(true);
-        setBanner({
-          tone: "warning",
-          title: "Finish setup to enable scans",
-          body: "Add an email in Setup so we can send daily/weekly digests. You can still view insights history.",
-        });
-      }
-const scanRes = await apiFetch("/api/scan-status", { cache: "no-store" });
-if (scanRes.ok) {
-  const scan = await scanRes.json();
-  setScanMeta({ last: scan?.last_scan_at ?? null, next: scan?.next_scan_at ?? null });
-}
-
-      // 2) Insights list
       const res = await apiFetch("/api/insights", { cache: "no-store" });
-
-      if (res.status === 401) {
-        setBanner({ tone: "critical", title: "Missing shop context", body: "Please relaunch this app from Shopify Admin." });
-        return;
-      }
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        setBanner({ tone: "critical", title: "Failed to load insights", body: text || `HTTP ${res.status}` });
+        const txt = await res.text().catch(() => "");
+        setBanner({ tone: "critical", title: "Failed to load insights", message: txt?.slice(0, 300) });
+        setInsights([]);
         return;
       }
-
-      const data = await res.json().catch(() => []);
-      setInsights(Array.isArray(data) ? data.slice(0, 5) : []);
+      const data = await res.json();
+      setInsights(Array.isArray(data) ? data : []);
     } finally {
       setLoading(false);
     }
@@ -138,138 +150,168 @@ if (scanRes.ok) {
 
   useEffect(() => {
     fetchInsights();
-  }, [fetchInsights]);
+    fetchScanMeta();
+  }, [fetchInsights, fetchScanMeta]);
 
   const runScan = useCallback(async () => {
     setScanLoading(true);
     setBanner(null);
-
     try {
-      // If setup missing, do NOT auto-redirect; give a clear CTA
-      if (setupMissing) {
+      const res = await apiFetch("/api/insights/run", { method: "POST" });
+      const text = await res.text();
+      let json: any = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        // non-json response
+      }
+
+      if (!res.ok) {
         setBanner({
-          tone: "warning",
-          title: "Setup required",
-          body: "Please add an email in Setup before running a scan.",
+          tone: "critical",
+          title: "Scan failed",
+          message: (json?.details || json?.error || text || "").toString().slice(0, 400),
         });
         return;
       }
 
-      const res = await apiFetch("/api/insights/run", { method: "POST" });
-
-      if (res.status === 401) {
-        setBanner({ tone: "critical", title: "Missing shop context", body: "Please relaunch this app from Shopify Admin." });
-        return;
-      }
-      if (res.status === 403) {
-        const text = await res.text().catch(() => "");
-        setBanner({ tone: "critical", title: "Shop not installed", body: text || "Missing access token. Reinstall the app." });
-        return;
-      }
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        setBanner({ tone: "critical", title: "Scan failed", body: text || `HTTP ${res.status}` });
-        return;
-      }
-
-      const json = await res.json().catch(() => ({}));
-      const count = Array.isArray(json?.insights) ? json.insights.length : (json?.insight ? 1 : 0);
-
-      setBanner({ tone: "success", title: `Scan complete — ${count} insight${count === 1 ? "" : "s"} found.` });
+      const inserted = Number(json?.inserted ?? 0);
+      const keys = Array.isArray(json?.keys) ? json.keys : [];
+      setBanner({
+        tone: "success",
+        title: `Scan complete — ${inserted} new insight${inserted === 1 ? "" : "s"}`,
+        message: keys.length ? `New: ${keys.join(", ")}` : undefined,
+      });
 
       await fetchInsights();
+      await fetchScanMeta();
+    } catch (e: any) {
+      setBanner({
+        tone: "critical",
+        title: "Scan failed",
+        message: (e?.message || String(e)).slice(0, 400),
+      });
     } finally {
       setScanLoading(false);
     }
-  }, [apiFetch, setupMissing, fetchInsights]);
+  }, [apiFetch, fetchInsights, fetchScanMeta]);
 
-  const shouldShowEmpty = useMemo(() => {
-    if (!insights.length) return true;
-    return !insights.some((i) => i.severity === "high" || i.severity === "medium");
-  }, [insights]);
+  const Section = ({ title, sev, items }: { title: string; sev: Severity; items: Insight[] }) => {
+    return (
+      <Card>
+        <Box padding="400">
+          <InlineStack align="space-between" blockAlign="center">
+            <InlineStack gap="200" blockAlign="center">
+              <Text variant="headingSm" as="h3">
+                {title}
+              </Text>
+              <Badge tone={badgeToneForSeverity(sev)}>{items.length.toString()}</Badge>
+            </InlineStack>
+          </InlineStack>
+        </Box>
+
+        <Divider />
+
+        <Box padding="400">
+          {items.length === 0 ? (
+            <Text as="p" tone="subdued">
+              Nothing flagged here.
+            </Text>
+          ) : (
+            <BlockStack gap="300">
+              {items.map((it) => (
+                <InsightCard key={it.id} insight={it} />
+              ))}
+            </BlockStack>
+          )}
+        </Box>
+      </Card>
+    );
+  };
+
+  const topSummary = (
+    <Card>
+      <Box padding="400">
+        <BlockStack gap="200">
+          <InlineStack align="space-between" blockAlign="center">
+            <InlineStack gap="200" blockAlign="center">
+              <Text as="span" variant="bodyMd" tone="subdued">
+                Today
+              </Text>
+              <Badge tone="critical">{`${counts.high} High`}</Badge>
+              <Badge tone="warning">{`${counts.medium} Medium`}</Badge>
+              <Badge tone="info">{`${counts.low} Low`}</Badge>
+            </InlineStack>
+
+            <InlineStack gap="200">
+              <Button onClick={() => router.push(withHost("/app/settings"))} variant="secondary">
+                Email settings
+              </Button>
+              <Button onClick={runScan} loading={scanLoading} variant="primary">
+                Run scan now
+              </Button>
+            </InlineStack>
+          </InlineStack>
+
+          <Text as="p" tone="subdued">
+            {scanSubtitle}
+          </Text>
+
+          {scanMeta.last_status === "error" ? (
+            <Text as="p" tone="critical">
+              Last scan failed. Run a manual scan.
+            </Text>
+          ) : null}
+        </BlockStack>
+      </Box>
+    </Card>
+  );
 
   return (
-    <Page
-      title="Today’s insights"
-      subtitle={scanSubtitle}
-      primaryAction={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
-      secondaryActions={[
-        { content: "Settings", onAction: () => router.push(withHost("/app/settings")) },
-      ]}
-    >
+    <Page title="Insights" subtitle={scanSubtitle}>
       <Layout>
         <Layout.Section>
           <BlockStack gap="300">
-            {banner && (
+            {banner ? (
               <Banner tone={banner.tone} title={banner.title} onDismiss={() => setBanner(null)}>
-                {banner.body ? <p>{banner.body}</p> : null}
-                {setupMissing ? (
-                  <div style={{ marginTop: 12 }}>
-                    <Button onClick={() => router.push(withHost("/app/setup"))}>Go to Setup</Button>
-                  </div>
-                ) : null}
+                {banner.message ? <p>{banner.message}</p> : null}
               </Banner>
-            )}
+            ) : null}
 
             {loading ? (
-              <InlineStack align="center">
-                <Spinner accessibilityLabel="Loading insights" size="small" />
-                <Text as="span" variant="bodyMd" tone="subdued">
-                  Loading insights…
-                </Text>
-              </InlineStack>
-            ) : shouldShowEmpty ? (
               <Card>
-                <EmptyState
-                  heading="Nothing critical today"
-                  image="https://cdn.shopify.com/static/images/admin/emptystate.svg"
-                  action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
-                  secondaryAction={{
-                    content: "Setup",
-                    onAction: () => router.push(withHost("/app/setup")),
-                  }}
-                >
-                  <Text as="p" tone="subdued">
-                    Your store looks stable based on the last scan.
-                  </Text>
-                </EmptyState>
+                <Box padding="400">
+                  <InlineStack align="center" gap="200">
+                    <Spinner accessibilityLabel="Loading insights" size="small" />
+                    <Text as="span" tone="subdued">
+                      Loading…
+                    </Text>
+                  </InlineStack>
+                </Box>
               </Card>
+            ) : insights.length === 0 ? (
+              <>
+                {topSummary}
+                <Card>
+                  <EmptyState
+                    heading="No insights yet"
+                    image="https://cdn.shopify.com/static/images/admin/emptystate.svg"
+                    action={{ content: "Run scan now", onAction: runScan, loading: scanLoading }}
+                    secondaryAction={{ content: "Email settings", onAction: () => router.push(withHost("/app/settings")) }}
+                  >
+                    <Text as="p" tone="subdued">
+                      Run a scan to detect issues like inventory pressure, dead stock, velocity risk, and price volatility.
+                    </Text>
+                  </EmptyState>
+                </Card>
+              </>
             ) : (
-              <BlockStack gap="400">
-  {bySeverity.high.length > 0 && (
-    <BlockStack gap="200">
-      <Text variant="headingMd" as="h2">Critical</Text>
-      <BlockStack gap="300">
-        {bySeverity.high.map((insight) => (
-          <InsightCard key={insight.id} insight={insight} />
-        ))}
-      </BlockStack>
-    </BlockStack>
-  )}
-
-  {bySeverity.medium.length > 0 && (
-    <BlockStack gap="200">
-      <Text variant="headingMd" as="h2">Needs attention</Text>
-      <BlockStack gap="300">
-        {bySeverity.medium.map((insight) => (
-          <InsightCard key={insight.id} insight={insight} />
-        ))}
-      </BlockStack>
-    </BlockStack>
-  )}
-
-  {bySeverity.low.length > 0 && (
-    <BlockStack gap="200">
-      <Text variant="headingMd" as="h2">Keep an eye on</Text>
-      <BlockStack gap="300">
-        {bySeverity.low.map((insight) => (
-          <InsightCard key={insight.id} insight={insight} />
-        ))}
-      </BlockStack>
-    </BlockStack>
-  )}
-</BlockStack>
-
+              <>
+                {topSummary}
+                <Section title="High priority" sev="high" items={grouped.high} />
+                <Section title="Needs attention" sev="medium" items={grouped.med} />
+                <Section title="FYI" sev="low" items={grouped.low} />
+              </>
             )}
           </BlockStack>
         </Layout.Section>
