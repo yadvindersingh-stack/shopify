@@ -94,7 +94,9 @@ function toInsightOutput(input: any): InsightOutput | null {
   const type = String(input?.type || input?.key || "").trim();
   if (!type) return null;
 
-  const title = String(input?.title || "").trim() || `Issue detected: ${type.replaceAll("_", " ")}`;
+  const title =
+    String(input?.title || "").trim() ||
+    `Issue detected: ${type.replaceAll("_", " ")}`;
 
   const description =
     String(input?.description || "").trim() ||
@@ -106,7 +108,9 @@ function toInsightOutput(input: any): InsightOutput | null {
     fallbackSuggestedAction(type);
 
   const severity = normalizeSeverity(input?.severity);
-  const evaluated_at = String(input?.evaluated_at || input?.evaluatedAt || new Date().toISOString());
+  const evaluated_at = String(
+    input?.evaluated_at || input?.evaluatedAt || new Date().toISOString()
+  );
 
   const indicators = Array.isArray(input?.indicators) ? input.indicators : undefined;
   const metrics = cleanObject(input?.metrics);
@@ -141,7 +145,8 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
         })
       : null;
 
-  const items_full = Array.isArray(out.items) && out.items.length ? out.items.slice(0, 25) : null;
+  const items_full =
+    Array.isArray(out.items) && out.items.length ? out.items.slice(0, 25) : null;
 
   return {
     shop_id: shopId,
@@ -153,6 +158,10 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
     data_snapshot: {
       confidence: out.confidence,
       evaluated_at: out.evaluated_at,
+
+      // ✅ “Updated today” relies on this being refreshed on each upsert.
+      updated_at: new Date().toISOString(),
+
       indicators: out.indicators ?? null,
       metrics: out.metrics ?? null,
       items_preview,
@@ -226,11 +235,9 @@ async function alreadyInsertedWithin(shopId: string, type: string, hours: number
   return Array.isArray(data) && data.length > 0;
 }
 
-// -------- Local digest helpers (replaces missing imports) --------
+// -------- Local digest helpers --------
 
 async function getActionableInsightsForEmail(shopId: string) {
-  // Keep it simple: latest insights, ordered by severity + recency.
-  // No extra guards; your time-guards already prevent spam.
   const { data, error } = await supabase
     .from("insights")
     .select("id,type,title,description,severity,suggested_action,data_snapshot,created_at")
@@ -266,7 +273,7 @@ function renderDailyEmailText(args: { shopDomain: string; insights: any[] }) {
   return lines.join("\n");
 }
 
-// ---- Inventory pressure ----
+// ---- Inventory pressure (unchanged logic; keep your current behavior) ----
 function evaluateInventoryPressureFromShopifyData(data: any) {
   const edges = data?.products?.edges ?? [];
   const nodes = Array.isArray(edges) ? edges.map((e: any) => e?.node).filter(Boolean) : [];
@@ -311,7 +318,7 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
   };
 }
 
-// ---- Dead inventory ----
+// ---- Dead inventory (unchanged; keep your current behavior) ----
 function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: number; minStock?: number }) {
   const WINDOW_DAYS = opts?.windowDays ?? 30;
   const MIN_STOCK = opts?.minStock ?? 10;
@@ -380,7 +387,8 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
 
     let bucket: Bucket | null = null;
     if (!everSold) bucket = "never_sold";
-    else if (lastSaleMs && lastSaleMs < cutoff30Ms) bucket = lastSaleMs >= cutoff90Ms ? "slow_mover" : "stopped_selling";
+    else if (lastSaleMs && lastSaleMs < cutoff30Ms)
+      bucket = lastSaleMs >= cutoff90Ms ? "slow_mover" : "stopped_selling";
 
     if (!bucket) continue;
 
@@ -404,7 +412,8 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
   deadItems.sort((a, b) => b.cash_trapped_estimate - a.cash_trapped_estimate);
 
   const totalTrapped = deadItems.reduce((sum, x) => sum + x.cash_trapped_estimate, 0);
-  const severity: "high" | "medium" | "low" = totalTrapped >= 500 ? "high" : deadItems.length >= 3 ? "medium" : "low";
+  const severity: "high" | "medium" | "low" =
+    totalTrapped >= 500 ? "high" : deadItems.length >= 3 ? "medium" : "low";
 
   return {
     key: "dead_inventory",
@@ -446,7 +455,6 @@ export async function runScanForShop(args: {
     variables: { ordersQuery },
   });
 
-  // NOTE: your context uses shopId: string; passing shop domain is fine.
   const ctx = buildInsightContext(args.shopDomain, new Date(), data);
 
   const candidatesRaw: any[] = [];
@@ -467,7 +475,7 @@ export async function runScanForShop(args: {
   evaluated.push("inventory_velocity_risk");
   if (velocity) candidatesRaw.push(velocity);
 
-  const inserts: DbInsight[] = [];
+  const upserts: DbInsight[] = [];
 
   for (const raw of candidatesRaw) {
     const out = toInsightOutput(raw);
@@ -478,6 +486,7 @@ export async function runScanForShop(args: {
       continue;
     }
 
+    // Guard based on last INSERT time (created_at). We keep this so we don't spam.
     const hours = GUARD_HOURS[out.type] ?? 6;
     const recently = await alreadyInsertedWithin(args.shopId, out.type, hours);
     if (recently) {
@@ -485,17 +494,22 @@ export async function runScanForShop(args: {
       continue;
     }
 
-    inserts.push(toDbInsight(args.shopId, out));
+    // ✅ Upsert updates the existing row (shop_id,type), keeps created_at untouched,
+    // and refreshes data_snapshot.updated_at.
+    upserts.push(toDbInsight(args.shopId, out));
   }
 
-  if (inserts.length > 0) {
-    const { error: upsertErr } = await supabase.from("insights").upsert(inserts, { onConflict: "shop_id,type" });
+  if (upserts.length > 0) {
+    const { error: upsertErr } = await supabase
+      .from("insights")
+      .upsert(upserts, { onConflict: "shop_id,type" });
+
     if (upsertErr) throw new Error(`Upsert failed: ${upsertErr.message}`);
   }
 
   const summary = {
-    inserted: inserts.length,
-    keys: inserts.map((i) => i.type),
+    inserted: upserts.length,
+    keys: upserts.map((i) => i.type),
     evaluated,
     skipped,
     diag: {
@@ -508,7 +522,7 @@ export async function runScanForShop(args: {
   const shopTimezone = (data as any)?.shop?.ianaTimezone || "UTC";
   await writeScanRun({ shopId: args.shopId, shopTimezone, status: "ok", summary });
 
-  // Email only on auto runs, and only if enabled + there is at least 1 insight.
+  // Email only on auto runs, only if enabled + there is at least 1 insight.
   if (args.mode === "auto") {
     try {
       const { data: settings } = await supabase

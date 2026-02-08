@@ -33,18 +33,17 @@ export type SalesRhythmDriftResult = {
   };
   evaluated_at: string;
 
-  // optional items list (for UI preview)
   items?: Array<{ title: string; inv?: number; revenue?: number }>;
   evidence?: Record<string, any>;
 };
 
 export type InsightContext = {
-  shopTimezone: string; // IANA
+  shopTimezone: string;
   now: Date;
 
   orders: {
     id: string;
-    created_at: string; // ISO
+    created_at: string;
     total_price: number;
     cancelled_at?: string | null;
   }[];
@@ -54,7 +53,6 @@ export type InsightContext = {
     title: string;
     price: number;
     inventory_quantity: number;
-    // optional (enriched by build-context)
     historical_revenue?: number;
   }[];
 
@@ -142,9 +140,7 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
   );
   const ordersTodayCount = ordersToday.length;
 
-  // Build two baselines:
-  // - same weekday last N occurrences
-  // - last 14 days any weekday (fallback)
+  // Build baselines
   const perDayCountsAll = new Map<string, number>();
   const perDayCountsSameWk = new Map<string, number>();
 
@@ -181,7 +177,6 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
     baselineCounts = anyDay14;
     comparedWindow = `Any weekday, last ${anyDay14.length} days, up to current time-of-day`;
   } else {
-    // Not enough data to be confident
     return null;
   }
 
@@ -190,11 +185,9 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
   const baselineP25 = quantile(sorted, 0.25);
   const baselineP75 = quantile(sorted, 0.75);
 
-  // “Expected low/high” band (robust-ish)
   const expectedLow = Math.max(0, Math.floor(baselineP25));
   const expectedHigh = Math.ceil(baselineP75);
 
-  // Trigger condition: today below expectedLow
   if (ordersTodayCount >= expectedLow) return null;
 
   const delta = baselineMedian - ordersTodayCount;
@@ -202,7 +195,7 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
   const severity: "low" | "medium" | "high" =
     delta >= 4 ? "high" : delta >= 2 ? "medium" : "low";
 
-  // ---- Add product context (best-sellers + low stock among best sellers) ----
+  // Product context
   const products = Array.isArray(ctx.products) ? ctx.products : [];
   const ranked = products
     .map((p) => ({
@@ -243,10 +236,9 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
       label: "Some top sellers are low on stock",
       status: "possible",
       confidence: "medium",
-      evidence:
-        `Low stock on best sellers: ${lowStockTopSellers
-          .map((p) => `${p.title} (${p.inv})`)
-          .join(", ")}.`,
+      evidence: `Low stock on best sellers: ${lowStockTopSellers
+        .map((p) => `${p.title} (${p.inv})`)
+        .join(", ")}.`,
     });
   }
 
