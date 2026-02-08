@@ -108,9 +108,7 @@ function toInsightOutput(input: any): InsightOutput | null {
     fallbackSuggestedAction(type);
 
   const severity = normalizeSeverity(input?.severity);
-  const evaluated_at = String(
-    input?.evaluated_at || input?.evaluatedAt || new Date().toISOString()
-  );
+  const evaluated_at = String(input?.evaluated_at || input?.evaluatedAt || new Date().toISOString());
 
   const indicators = Array.isArray(input?.indicators) ? input.indicators : undefined;
   const metrics = cleanObject(input?.metrics);
@@ -139,7 +137,7 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
       ? out.items.slice(0, 5).map((x: any) => {
           if (!x || typeof x !== "object") return x;
           const t = x.title || x.name || x.product_title;
-          const inv = x.inv ?? x.inventory ?? x.totalInventory ?? x.inventory_quantity;
+          const inv = x.inv ?? x.inventory ?? x.totalInventory ?? x.inventory_quantity ?? x.inventory;
           const days = x.days_since_last_sale ?? x.days ?? x.daysSince;
           return { title: t, inv, days, bucket: x.bucket };
         })
@@ -158,10 +156,7 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
     data_snapshot: {
       confidence: out.confidence,
       evaluated_at: out.evaluated_at,
-
-      // ✅ “Updated today” relies on this being refreshed on each upsert.
       updated_at: new Date().toISOString(),
-
       indicators: out.indicators ?? null,
       metrics: out.metrics ?? null,
       items_preview,
@@ -235,7 +230,13 @@ async function alreadyInsertedWithin(shopId: string, type: string, hours: number
   return Array.isArray(data) && data.length > 0;
 }
 
-// -------- Local digest helpers --------
+function todayKeyUTC() {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 async function getActionableInsightsForEmail(shopId: string) {
   const { data, error } = await supabase
@@ -273,7 +274,7 @@ function renderDailyEmailText(args: { shopDomain: string; insights: any[] }) {
   return lines.join("\n");
 }
 
-// ---- Inventory pressure (unchanged logic; keep your current behavior) ----
+// ---- Inventory pressure ----
 function evaluateInventoryPressureFromShopifyData(data: any) {
   const edges = data?.products?.edges ?? [];
   const nodes = Array.isArray(edges) ? edges.map((e: any) => e?.node).filter(Boolean) : [];
@@ -318,8 +319,11 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
   };
 }
 
-// ---- Dead inventory (unchanged; keep your current behavior) ----
-function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: number; minStock?: number }) {
+// ---- Dead inventory ----
+function evaluateDeadInventoryFromShopifyData(
+  data: any,
+  opts?: { windowDays?: number; minStock?: number }
+) {
   const WINDOW_DAYS = opts?.windowDays ?? 30;
   const MIN_STOCK = opts?.minStock ?? 10;
   const SLOW_MOVER_DAYS = 90;
@@ -393,7 +397,9 @@ function evaluateDeadInventoryFromShopifyData(data: any, opts?: { windowDays?: n
     if (!bucket) continue;
 
     const lastSaleAt = lastSaleMs ? new Date(lastSaleMs).toISOString() : null;
-    const daysSince = lastSaleMs ? Math.floor((now.getTime() - lastSaleMs) / (24 * 60 * 60 * 1000)) : null;
+    const daysSince = lastSaleMs
+      ? Math.floor((now.getTime() - lastSaleMs) / (24 * 60 * 60 * 1000))
+      : null;
 
     deadItems.push({
       product_id: productId,
@@ -445,104 +451,159 @@ export async function runScanForShop(args: {
   const evaluated: string[] = [];
   const skipped: Array<{ type: string; reason: string }> = [];
 
-  const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
-  const ordersQuery = `created_at:>=${sinceIso}`;
+  let data: any = null;
+  let shopTimezone = "UTC";
 
-  const data = await shopifyGraphql({
-    shop: args.shopDomain,
-    accessToken: args.accessToken,
-    query: INSIGHT_CONTEXT_QUERY,
-    variables: { ordersQuery },
-  });
+  try {
+    const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+    const ordersQuery = `created_at:>=${sinceIso}`;
 
-  const ctx = buildInsightContext(args.shopDomain, new Date(), data);
+    data = await shopifyGraphql({
+      shop: args.shopDomain,
+      accessToken: args.accessToken,
+      query: INSIGHT_CONTEXT_QUERY,
+      variables: { ordersQuery },
+    });
 
-  const candidatesRaw: any[] = [];
+    shopTimezone = data?.shop?.ianaTimezone || "UTC";
 
-  const drift = await evaluateSalesRhythmDrift(ctx);
-  evaluated.push("sales_rhythm_drift");
-  if (drift) candidatesRaw.push(drift);
+    const ctx = buildInsightContext(args.shopDomain, new Date(), data);
 
-  const invPressure = evaluateInventoryPressureFromShopifyData(data);
-  evaluated.push("inventory_pressure");
-  if (invPressure) candidatesRaw.push(invPressure);
+    const candidatesRaw: any[] = [];
 
-  const deadInv = evaluateDeadInventoryFromShopifyData(data, { windowDays: 30, minStock: 10 });
-  evaluated.push("dead_inventory");
-  if (deadInv) candidatesRaw.push(deadInv);
+    const drift = await evaluateSalesRhythmDrift(ctx);
+    evaluated.push("sales_rhythm_drift");
+    if (drift) candidatesRaw.push(drift);
 
-  const velocity = evaluateInventoryVelocityRisk(ctx);
-  evaluated.push("inventory_velocity_risk");
-  if (velocity) candidatesRaw.push(velocity);
+    const invPressure = evaluateInventoryPressureFromShopifyData(data);
+    evaluated.push("inventory_pressure");
+    if (invPressure) candidatesRaw.push(invPressure);
 
-  const upserts: DbInsight[] = [];
+    const deadInv = evaluateDeadInventoryFromShopifyData(data, { windowDays: 30, minStock: 10 });
+    evaluated.push("dead_inventory");
+    if (deadInv) candidatesRaw.push(deadInv);
 
-  for (const raw of candidatesRaw) {
-    const out = toInsightOutput(raw);
-    const type = String(raw?.key || raw?.type || "unknown");
+    const velocity = evaluateInventoryVelocityRisk(ctx);
+    evaluated.push("inventory_velocity_risk");
+    if (velocity) candidatesRaw.push(velocity);
 
-    if (!out) {
-      skipped.push({ type, reason: "normalize_failed" });
-      continue;
-    }
+    const upserts: DbInsight[] = [];
 
-    // Guard based on last INSERT time (created_at). We keep this so we don't spam.
-    const hours = GUARD_HOURS[out.type] ?? 6;
-    const recently = await alreadyInsertedWithin(args.shopId, out.type, hours);
-    if (recently) {
-      skipped.push({ type: out.type, reason: `guard_${hours}h` });
-      continue;
-    }
+    for (const raw of candidatesRaw) {
+      const out = toInsightOutput(raw);
+      const type = String(raw?.key || raw?.type || "unknown");
 
-    // ✅ Upsert updates the existing row (shop_id,type), keeps created_at untouched,
-    // and refreshes data_snapshot.updated_at.
-    upserts.push(toDbInsight(args.shopId, out));
-  }
-
-  if (upserts.length > 0) {
-    const { error: upsertErr } = await supabase
-      .from("insights")
-      .upsert(upserts, { onConflict: "shop_id,type" });
-
-    if (upsertErr) throw new Error(`Upsert failed: ${upsertErr.message}`);
-  }
-
-  const summary = {
-    inserted: upserts.length,
-    keys: upserts.map((i) => i.type),
-    evaluated,
-    skipped,
-    diag: {
-      products_present: Boolean((data as any)?.products),
-      products_edges: (data as any)?.products?.edges?.length ?? 0,
-      orders_edges: (data as any)?.orders?.edges?.length ?? 0,
-    },
-  };
-
-  const shopTimezone = (data as any)?.shop?.ianaTimezone || "UTC";
-  await writeScanRun({ shopId: args.shopId, shopTimezone, status: "ok", summary });
-
-  // Email only on auto runs, only if enabled + there is at least 1 insight.
-  if (args.mode === "auto") {
-    try {
-      const { data: settings } = await supabase
-        .from("digest_settings")
-        .select("email,daily_enabled")
-        .eq("shop_id", args.shopId)
-        .maybeSingle();
-
-      if (settings?.daily_enabled && settings?.email) {
-        const actionable = await getActionableInsightsForEmail(args.shopId);
-        if (Array.isArray(actionable) && actionable.length > 0) {
-          const subject = `MerchPulse — ${actionable.length} issue${actionable.length > 1 ? "s" : ""} need attention`;
-          const text = renderDailyEmailText({ shopDomain: args.shopDomain, insights: actionable });
-          await sendDailyDigestEmail({ to: settings.email, subject, body: text });
-        }
+      if (!out) {
+        skipped.push({ type, reason: "normalize_failed" });
+        continue;
       }
-    } catch (e: any) {
-      console.log("EMAIL_SEND_FAILED", e?.message || String(e));
-    }
-  }
 
-  return summary;
+      const hours = GUARD_HOURS[out.type] ?? 6;
+      const recently = await alreadyInsertedWithin(args.shopId, out.type, hours);
+      if (recently) {
+        skipped.push({ type: out.type, reason: `guard_${hours}h` });
+        continue;
+      }
+
+      upserts.push(toDbInsight(args.shopId, out));
+    }
+
+    if (upserts.length > 0) {
+      const { error: upsertErr } = await supabase
+        .from("insights")
+        .upsert(upserts, { onConflict: "shop_id,type" });
+
+      if (upsertErr) throw new Error(`Upsert failed: ${upsertErr.message}`);
+    }
+
+    const summary = {
+      inserted: upserts.length,
+      keys: upserts.map((i) => i.type),
+      evaluated,
+      skipped,
+      diag: {
+        products_present: Boolean(data?.products),
+        products_edges: data?.products?.edges?.length ?? 0,
+        orders_edges: data?.orders?.edges?.length ?? 0,
+      },
+    };
+
+    // Always write scan_runs (ok)
+    await writeScanRun({
+      shopId: args.shopId,
+      shopTimezone,
+      status: "ok",
+      summary,
+    });
+
+    // Email only on auto runs, and only once per UTC day.
+    if (args.mode === "auto") {
+      try {
+        const { data: settings } = await supabase
+          .from("digest_settings")
+          .select("email,daily_enabled")
+          .eq("shop_id", args.shopId)
+          .maybeSingle();
+
+        if (settings?.daily_enabled && settings?.email) {
+          // check email_sent_on in scan_runs.last_scan_summary
+          const today = todayKeyUTC();
+          const { data: runRow } = await supabase
+            .from("scan_runs")
+            .select("last_scan_summary")
+            .eq("shop_id", args.shopId)
+            .maybeSingle();
+
+          const alreadySent = runRow?.last_scan_summary?.email_sent_on === today;
+
+          if (!alreadySent) {
+            const actionable = await getActionableInsightsForEmail(args.shopId);
+            if (Array.isArray(actionable) && actionable.length > 0) {
+              const subject = `MerchPulse — ${actionable.length} issue${actionable.length > 1 ? "s" : ""} need attention`;
+              const text = renderDailyEmailText({ shopDomain: args.shopDomain, insights: actionable });
+
+              await sendDailyDigestEmail({ to: settings.email, subject, body: text });
+
+              // record sent marker (merge, don’t wipe)
+              const merged = {
+                ...(summary || {}),
+                email_sent_on: today,
+                emailed_to: settings.email,
+              };
+
+              await supabase.from("scan_runs").upsert(
+                {
+                  shop_id: args.shopId,
+                  last_scan_summary: merged,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "shop_id" }
+              );
+            }
+          }
+        }
+      } catch (e: any) {
+        console.log("EMAIL_SEND_FAILED", e?.message || String(e));
+      }
+    }
+
+    return summary;
+  } catch (e: any) {
+    const errSummary = {
+      error: true,
+      message: e?.message || String(e),
+      evaluated,
+      skipped,
+    };
+
+    // Still write scan_runs (error), so UI + cron schedule stays sane
+    await writeScanRun({
+      shopId: args.shopId,
+      shopTimezone,
+      status: "error",
+      summary: errSummary,
+    });
+
+    throw e;
+  }
 }
