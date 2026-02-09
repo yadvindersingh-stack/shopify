@@ -33,17 +33,18 @@ export type SalesRhythmDriftResult = {
   };
   evaluated_at: string;
 
+  // optional items list (for UI preview)
   items?: Array<{ title: string; inv?: number; revenue?: number }>;
   evidence?: Record<string, any>;
 };
 
 export type InsightContext = {
-  shopTimezone: string;
+  shopTimezone: string; // IANA
   now: Date;
 
   orders: {
     id: string;
-    created_at: string;
+    created_at: string; // ISO
     total_price: number;
     cancelled_at?: string | null;
   }[];
@@ -53,6 +54,7 @@ export type InsightContext = {
     title: string;
     price: number;
     inventory_quantity: number;
+    // optional (enriched by build-context)
     historical_revenue?: number;
   }[];
 
@@ -120,7 +122,9 @@ function safeNumber(n: any) {
   return Number.isFinite(x) ? x : 0;
 }
 
-export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<SalesRhythmDriftResult | null> {
+export async function evaluateSalesRhythmDrift(
+  ctx: InsightContext
+): Promise<SalesRhythmDriftResult | null> {
   const tz = ctx.shopTimezone || "UTC";
   const now = ctx.now ?? new Date();
 
@@ -140,7 +144,9 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
   );
   const ordersTodayCount = ordersToday.length;
 
-  // Build baselines
+  // Build two baselines:
+  // - same weekday last N occurrences
+  // - last 14 days any weekday (fallback)
   const perDayCountsAll = new Map<string, number>();
   const perDayCountsSameWk = new Map<string, number>();
 
@@ -177,6 +183,7 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
     baselineCounts = anyDay14;
     comparedWindow = `Any weekday, last ${anyDay14.length} days, up to current time-of-day`;
   } else {
+    // Not enough data to be confident
     return null;
   }
 
@@ -185,9 +192,11 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
   const baselineP25 = quantile(sorted, 0.25);
   const baselineP75 = quantile(sorted, 0.75);
 
+  // “Expected low/high” band (robust-ish)
   const expectedLow = Math.max(0, Math.floor(baselineP25));
   const expectedHigh = Math.ceil(baselineP75);
 
+  // Trigger condition: today below expectedLow
   if (ordersTodayCount >= expectedLow) return null;
 
   const delta = baselineMedian - ordersTodayCount;
@@ -195,7 +204,7 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
   const severity: "low" | "medium" | "high" =
     delta >= 4 ? "high" : delta >= 2 ? "medium" : "low";
 
-  // Product context
+  // ---- Add product context (best-sellers + low stock among best sellers) ----
   const products = Array.isArray(ctx.products) ? ctx.products : [];
   const ranked = products
     .map((p) => ({
@@ -213,30 +222,30 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
 
   indicators.push({
     key: "order_count_drop",
-    label: "Orders are below your usual pace",
+    label: "Order pace is below normal",
     status: "likely",
     confidence: severity === "high" ? "high" : "medium",
-    evidence: `So far today: ${ordersTodayCount} orders. Typical (median) by this time: ${Math.round(
+    evidence: `Orders so far today: ${ordersTodayCount}. Typical by this time: ~${Math.round(
       baselineMedian
     )}. Expected range: ${expectedLow}–${expectedHigh}.`,
   });
 
   indicators.push({
-    key: "needs_attribution",
-    label: "Cause not attributed yet (traffic / ads / checkout / stock)",
+    key: "why_unknown",
+    label: "Why this might be happening",
     status: "unknown",
     confidence: "low",
     evidence:
-      "This check currently only compares order pace. Next: we’ll layer in traffic and checkout signals to pinpoint why (e.g., fewer sessions vs. conversion drop).",
+      "This signal is based on order pace. Common causes are traffic drops, conversion issues (checkout/discounts), or stockouts.",
   });
 
   if (lowStockTopSellers.length > 0) {
     indicators.push({
       key: "top_seller_stock_risk",
-      label: "Some top sellers are low on stock",
+      label: "A top seller may be constraining sales",
       status: "possible",
       confidence: "medium",
-      evidence: `Low stock on best sellers: ${lowStockTopSellers
+      evidence: `Low stock on top sellers: ${lowStockTopSellers
         .map((p) => `${p.title} (${p.inv})`)
         .join(", ")}.`,
     });
@@ -244,35 +253,34 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
 
   const title =
     severity === "high"
-      ? "Orders are unusually low today"
-      : "Orders are running behind today";
+      ? "Sales are far below your normal rhythm today"
+      : "Sales are below your normal rhythm today";
 
   const summaryParts: string[] = [];
   summaryParts.push(
-    `You have ${ordersTodayCount} orders so far today. By this time, you usually see about ${Math.round(
+    `Orders today are behind your usual pace for this time of day (${ordersTodayCount} vs ~${Math.round(
       baselineMedian
-    )}.`
+    )}).`
   );
 
   if (lowStockTopSellers.length > 0) {
     summaryParts.push(
-      `A few best sellers are low on stock (${lowStockTopSellers
+      `Some top sellers are low on stock (${lowStockTopSellers
         .map((p) => `${p.title} (${p.inv})`)
-        .join(", ")}), which can suppress sales.`
+        .join(", ")}).`
     );
   }
 
   const suggested_action =
-    "Quick check: confirm checkout is working, verify active campaigns are running, and ensure best sellers are in stock. If you see low stock on a top seller, restock or temporarily shift traffic (collections/ads) to an in-stock alternative.";
+    "Run a 2-minute storefront smoke test (product → cart → checkout) and confirm your top sellers are in stock.";
 
   const evaluatedAt = new Date().toISOString();
   const nowLocal = toLocalParts(now, tz);
-  const nowLocalIso = `${nowLocal.y}-${String(nowLocal.m).padStart(2, "0")}-${String(nowLocal.d).padStart(
-    2,
-    "0"
-  )}T${String(nowLocal.hh).padStart(2, "0")}:${String(nowLocal.mm).padStart(2, "0")}:${String(
-    nowLocal.ss
-  ).padStart(2, "0")}`;
+  const nowLocalIso = `${nowLocal.y}-${String(nowLocal.m).padStart(2, "0")}-${String(
+    nowLocal.d
+  ).padStart(2, "0")}T${String(nowLocal.hh).padStart(2, "0")}:${String(
+    nowLocal.mm
+  ).padStart(2, "0")}:${String(nowLocal.ss).padStart(2, "0")}`;
 
   return {
     key: "sales_rhythm_drift",
@@ -296,7 +304,11 @@ export async function evaluateSalesRhythmDrift(ctx: InsightContext): Promise<Sal
     },
     evidence: {
       top_sellers: topSellers.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue })),
-      low_stock_top_sellers: lowStockTopSellers.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue })),
+      low_stock_top_sellers: lowStockTopSellers.map((p) => ({
+        title: p.title,
+        inv: p.inv,
+        revenue: p.revenue,
+      })),
     },
     items: lowStockTopSellers.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue })),
     evaluated_at: evaluatedAt,
