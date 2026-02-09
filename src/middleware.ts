@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { decodeShopFromBearer, readSessionFromCookie } from "./lib/shopify";
 
-const AUTH_ROUTES = ["/api/auth/start", "/api/auth/callback"];
+const AUTH_ROUTES = ["/api/auth/start", "/api/auth/callback", "/api/cron/scan"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
