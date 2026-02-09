@@ -13,215 +13,239 @@ import {
   Text,
 } from "@shopify/polaris";
 
+type InsightSeverity = "high" | "medium" | "low";
+
 type Insight = {
   id: string;
   title: string;
-  description: string | null;
-  severity: "high" | "medium" | "low";
-  suggested_action: string | null;
-  data_snapshot: Record<string, any> | null;
-  created_at?: string;
+  description?: string | null;
+  severity: InsightSeverity;
+  suggested_action?: string | null;
+  created_at?: string | null;
+  data_snapshot?: {
+    confidence?: "high" | "medium" | "low" | null;
+    evidence?: Record<string, any> | null;
+    metrics?: Record<string, any> | null;
+    items_preview?: any[] | null;
+    evaluated_at?: string | null;
+    raw?: any;
+  } | null;
 };
 
-function severityTone(severity: Insight["severity"]) {
+function severityTone(severity: InsightSeverity) {
   if (severity === "high") return "critical" as const;
   if (severity === "medium") return "warning" as const;
   return "info" as const;
 }
 
-function readableSeverity(severity: Insight["severity"]) {
+function readableSeverity(severity: InsightSeverity) {
   if (severity === "high") return "High";
   if (severity === "medium") return "Medium";
   return "Low";
 }
 
-function tryHumanDate(iso?: string) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return null;
-  return d.toLocaleDateString(undefined, {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+function formatHumanDate(d?: string | null) {
+  if (!d) return "";
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return "";
+  return dt.toLocaleDateString("en-CA", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function formatValue(v: any) {
+function toTitleCaseKey(k: string) {
+  return k
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function safeString(v: any) {
   if (v === null || v === undefined) return "";
-  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
   if (typeof v === "string") return v;
-  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
   try {
-    if (typeof v === "object") return JSON.stringify(v);
-  } catch {}
-  return String(v);
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
+function renderItemLine(item: any) {
+  // Try to give a human line for your common shapes.
+  const title = item?.title ?? item?.product_title ?? item?.name ?? "Item";
+  const inv =
+    item?.inv ??
+    item?.inventory ??
+    item?.inventory_quantity ??
+    item?.totalInventory ??
+    item?.total_inventory;
+
+  const days =
+    item?.days ??
+    item?.days_since_last_sale ??
+    item?.daysSince ??
+    item?.days_of_supply ??
+    item?.daysOfSupply;
+
+  const parts: string[] = [String(title)];
+  if (Number.isFinite(Number(inv))) parts.push(`inv: ${Number(inv)}`);
+  if (Number.isFinite(Number(days))) parts.push(`days: ${Number(days)}`);
+  return parts.join(" · ");
 }
 
 export default function InsightCard({ insight }: { insight: Insight }) {
   const [openDetails, setOpenDetails] = useState(false);
   const [openRaw, setOpenRaw] = useState(false);
 
-  const snap = insight.data_snapshot ?? {};
-  const createdHuman = tryHumanDate(insight.created_at);
+  const detectedDate = useMemo(() => {
+    // Prefer evaluated_at (when the model/logic ran), fall back to created_at
+    const ev = insight.data_snapshot?.evaluated_at ?? null;
+    const cr = insight.created_at ?? null;
+    const s = formatHumanDate(ev || cr);
+    return s ? `Detected: ${s}` : "";
+  }, [insight.data_snapshot?.evaluated_at, insight.created_at]);
 
-  // Our D1 snapshot shape is:
-  // { confidence, evidence, metrics, items_preview, evaluated_at, raw }
-  const itemsPreview: any[] = useMemo(() => {
-    const a = snap?.items_preview;
-    return Array.isArray(a) ? a : [];
-  }, [snap]);
+  const keyMetrics = useMemo(() => {
+    const ev = insight.data_snapshot?.evidence ?? null;
+    const mt = insight.data_snapshot?.metrics ?? null;
+    // Prefer evidence (clean, intended for UI); fallback to metrics if needed.
+    const obj = ev && typeof ev === "object" ? ev : mt && typeof mt === "object" ? mt : null;
+    if (!obj) return [];
+    return Object.entries(obj)
+      .filter(([_, v]) => v !== null && v !== undefined && v !== "")
+      .slice(0, 8);
+  }, [insight.data_snapshot?.evidence, insight.data_snapshot?.metrics]);
 
-  const confidence = (snap?.confidence as string) || null;
-  const metrics = snap?.metrics && typeof snap.metrics === "object" ? snap.metrics : null;
+  const itemsPreview = useMemo(() => {
+    const items = insight.data_snapshot?.items_preview;
+    if (!Array.isArray(items) || items.length === 0) return [];
+    return items.slice(0, 6);
+  }, [insight.data_snapshot?.items_preview]);
 
-  const rawPretty = useMemo(() => {
-    try {
-      return JSON.stringify(snap?.raw ?? snap, null, 2);
-    } catch {
-      return String(snap?.raw ?? snap);
-    }
-  }, [snap]);
+  const raw = insight.data_snapshot?.raw;
 
   return (
     <Card>
       <Box padding="400">
-        <InlineStack align="space-between" blockAlign="center">
-          <BlockStack gap="050">
+        <BlockStack gap="200">
+          <InlineStack align="space-between" blockAlign="center">
             <InlineStack gap="200" blockAlign="center">
               <Text variant="headingSm" as="h3">
                 {insight.title}
               </Text>
               <Badge tone={severityTone(insight.severity)}>{readableSeverity(insight.severity)}</Badge>
-              {confidence ? (
-                <Text as="span" tone="subdued" variant="bodySm">
-                  · {confidence} confidence
-                </Text>
-              ) : null}
             </InlineStack>
-            {createdHuman ? (
-              <Text as="span" tone="subdued" variant="bodySm">
-                Detected: {createdHuman}
-              </Text>
-            ) : null}
-          </BlockStack>
 
-          <Button variant="plain" onClick={() => setOpenDetails((v) => !v)}>
-            {openDetails ? "Hide details" : "Show details"}
-          </Button>
-        </InlineStack>
+            <Button variant="plain" onClick={() => setOpenDetails((v) => !v)}>
+              {openDetails ? "Hide details" : "Show details"}
+            </Button>
+          </InlineStack>
+
+          {detectedDate ? (
+            <Text as="p" tone="subdued">
+              {detectedDate}
+            </Text>
+          ) : null}
+        </BlockStack>
       </Box>
 
       <Box padding="400" borderBlockStartWidth="025" borderColor="border">
-        <Collapsible open={openDetails} id={`${insight.id}-details`}>
-          <BlockStack gap="300">
-            <BlockStack gap="100">
-              <Text variant="headingSm" as="h4">
-                What we saw
-              </Text>
-              <Text as="p">
-                {insight.description?.trim()
-                  ? insight.description
-                  : snap?.raw?.summary?.trim()
-                    ? snap.raw.summary
-                    : "We detected a pattern worth reviewing."}
-              </Text>
-            </BlockStack>
-
-            <BlockStack gap="100">
-              <Text variant="headingSm" as="h4">
-                Suggested action
-              </Text>
-              <Text as="p">
-                {insight.suggested_action?.trim()
-                  ? insight.suggested_action
-                  : snap?.raw?.suggested_action?.trim()
-                    ? snap.raw.suggested_action
-                    : "Review the flagged items and decide your next action."}
-              </Text>
-            </BlockStack>
-
-            {itemsPreview.length > 0 ? (
-              <BlockStack gap="150">
-                <Divider />
-                <Text variant="headingSm" as="h4">
-                  Items flagged (preview)
+        <BlockStack gap="300">
+          <Collapsible open={openDetails} id={`${insight.id}-details`}>
+            <BlockStack gap="300">
+              <BlockStack gap="100">
+                <Text variant="headingSm" as="h3">
+                  What we saw
                 </Text>
-
-                <Box
-                  padding="300"
-                  background="bg-surface-tertiary"
-                  borderWidth="025"
-                  borderColor="border"
-                  borderRadius="200"
-                >
-                  <BlockStack gap="150">
-                    {itemsPreview.map((it: any, idx: number) => (
-                      <Box key={idx} padding="200" background="bg-surface" borderRadius="200">
-                        <InlineStack align="space-between" blockAlign="center">
-                          <Text as="span" variant="bodyMd">
-                            {String(it?.title ?? it?.name ?? `Item ${idx + 1}`)}
-                          </Text>
-                          <Text as="span" tone="subdued" variant="bodySm">
-                            {it?.inv !== undefined && it?.inv !== null ? `Inv: ${formatValue(it.inv)}` : ""}
-                            {it?.days !== undefined && it?.days !== null ? ` · Days: ${formatValue(it.days)}` : ""}
-                          </Text>
-                        </InlineStack>
-                      </Box>
-                    ))}
-                  </BlockStack>
-                </Box>
+                <Text as="p">{insight.description || "No description available."}</Text>
               </BlockStack>
-            ) : null}
 
-            {metrics ? (
-              <BlockStack gap="150">
-                <Divider />
-                <Text variant="headingSm" as="h4">
+              <BlockStack gap="100">
+                <Text variant="headingSm" as="h3">
+                  Suggested action
+                </Text>
+                <Text as="p">{insight.suggested_action || "No suggested action available."}</Text>
+              </BlockStack>
+
+              <Divider />
+
+              <BlockStack gap="100">
+                <Text variant="headingSm" as="h3">
                   Key metrics
                 </Text>
-                <Box padding="300" background="bg-surface-tertiary" borderRadius="200">
-                  <BlockStack gap="100">
-                    {Object.entries(metrics).slice(0, 10).map(([k, v]) => (
-                      <InlineStack key={k} align="space-between">
-                        <Text as="span" tone="subdued" variant="bodySm">
-                          {k.replaceAll("_", " ")}
-                        </Text>
-                        <Text as="span" variant="bodySm">
-                          {formatValue(v)}
-                        </Text>
-                      </InlineStack>
-                    ))}
-                  </BlockStack>
-                </Box>
+
+                {keyMetrics.length === 0 ? (
+                  <Text as="p" tone="subdued">
+                    No key metrics available for this insight.
+                  </Text>
+                ) : (
+                  <Box
+                    padding="300"
+                    background="bg-surface-tertiary"
+                    borderWidth="025"
+                    borderColor="border"
+                  >
+                    <BlockStack gap="150">
+                      {keyMetrics.map(([k, v]) => (
+                        <InlineStack key={k} align="space-between" blockAlign="center">
+                          <Text as="span" tone="subdued">
+                            {toTitleCaseKey(k)}
+                          </Text>
+                          <Text as="span" alignment="end">
+                            {safeString(v)}
+                          </Text>
+                        </InlineStack>
+                      ))}
+                    </BlockStack>
+                  </Box>
+                )}
               </BlockStack>
-            ) : null}
 
-            <Divider />
+              {itemsPreview.length > 0 ? (
+                <>
+                  <Divider />
+                  <BlockStack gap="100">
+                    <Text variant="headingSm" as="h3">
+                      Items
+                    </Text>
+                    <Box
+                      padding="300"
+                      background="bg-surface-tertiary"
+                      borderWidth="025"
+                      borderColor="border"
+                    >
+                      <BlockStack gap="150">
+                        {itemsPreview.map((it, idx) => (
+                          <Text key={idx} as="p">
+                            {renderItemLine(it)}
+                          </Text>
+                        ))}
+                      </BlockStack>
+                    </Box>
+                  </BlockStack>
+                </>
+              ) : null}
+            </BlockStack>
+          </Collapsible>
 
-            <InlineStack align="space-between" blockAlign="center">
-              <Text as="span" variant="bodyMd" tone="subdued">
-                Raw data
-              </Text>
-              <Button variant="plain" onClick={() => setOpenRaw((v) => !v)}>
-                {openRaw ? "Hide" : "Show"}
-              </Button>
-            </InlineStack>
+          <Divider />
 
-            <Collapsible open={openRaw} id={`${insight.id}-raw`}>
-              <Box
-                padding="300"
-                background="bg-surface-tertiary"
-                borderWidth="025"
-                borderColor="border"
-                borderRadius="200"
-              >
-                <pre style={{ margin: 0 }}>
-                  {rawPretty}
-                </pre>
-              </Box>
-            </Collapsible>
-          </BlockStack>
-        </Collapsible>
+          <InlineStack align="space-between" blockAlign="center">
+            <Text as="span" variant="bodyMd" tone="subdued">
+              Raw data
+            </Text>
+            <Button variant="plain" onClick={() => setOpenRaw((v) => !v)}>
+              {openRaw ? "Hide" : "Show"}
+            </Button>
+          </InlineStack>
+
+          <Collapsible open={openRaw} id={`${insight.id}-raw`}>
+           <Box padding="300" background="bg-surface-tertiary" borderWidth="025" borderColor="border">
+  <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "var(--p-font-family-mono)" }}>
+    {raw ? JSON.stringify(raw, null, 2) : "No raw data."}
+  </pre>
+</Box>
+
+          </Collapsible>
+        </BlockStack>
       </Box>
     </Card>
   );
