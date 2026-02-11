@@ -122,6 +122,17 @@ function safeNumber(n: any) {
   return Number.isFinite(x) ? x : 0;
 }
 
+function round2(n: number) {
+  return Math.round(n * 100) / 100;
+}
+
+function formatLocalIso(now: Date, tz: string) {
+  const p = toLocalParts(now, tz);
+  return `${p.y}-${String(p.m).padStart(2, "0")}-${String(p.d).padStart(2, "0")}T${String(
+    p.hh
+  ).padStart(2, "0")}:${String(p.mm).padStart(2, "0")}:${String(p.ss).padStart(2, "0")}`;
+}
+
 export async function evaluateSalesRhythmDrift(
   ctx: InsightContext
 ): Promise<SalesRhythmDriftResult | null> {
@@ -136,7 +147,7 @@ export async function evaluateSalesRhythmDrift(
   const nowWeekday = toLocalParts(now, tz).weekday;
 
   // Orders today so far (ignore cancelled)
-  const ordersToday = ctx.orders.filter(
+  const ordersToday = (ctx.orders || []).filter(
     (o) =>
       !o.cancelled_at &&
       isSameLocalDay(o.created_at, now, tz) &&
@@ -150,7 +161,7 @@ export async function evaluateSalesRhythmDrift(
   const perDayCountsAll = new Map<string, number>();
   const perDayCountsSameWk = new Map<string, number>();
 
-  for (const o of ctx.orders) {
+  for (const o of ctx.orders || []) {
     if (o.cancelled_at) continue;
     const m = minutesSinceMidnight(new Date(o.created_at), tz);
     if (m > nowLocalMin) continue;
@@ -192,11 +203,11 @@ export async function evaluateSalesRhythmDrift(
   const baselineP25 = quantile(sorted, 0.25);
   const baselineP75 = quantile(sorted, 0.75);
 
-  // “Expected low/high” band (robust-ish)
+  // Expected band (robust-ish)
   const expectedLow = Math.max(0, Math.floor(baselineP25));
   const expectedHigh = Math.ceil(baselineP75);
 
-  // Trigger condition: today below expectedLow
+  // Trigger: today below expected low
   if (ordersTodayCount >= expectedLow) return null;
 
   const delta = baselineMedian - ordersTodayCount;
@@ -204,9 +215,9 @@ export async function evaluateSalesRhythmDrift(
   const severity: "low" | "medium" | "high" =
     delta >= 4 ? "high" : delta >= 2 ? "medium" : "low";
 
-  // ---- Add product context (best-sellers + low stock among best sellers) ----
+  // ---- Product context (fallback-safe) ----
   const products = Array.isArray(ctx.products) ? ctx.products : [];
-  const ranked = products
+  const rankedByRevenue = products
     .map((p) => ({
       id: p.id,
       title: p.title,
@@ -215,8 +226,32 @@ export async function evaluateSalesRhythmDrift(
     }))
     .sort((a, b) => b.revenue - a.revenue);
 
-  const topSellers = ranked.filter((p) => p.revenue > 0).slice(0, 5);
-  const lowStockTopSellers = topSellers.filter((p) => p.inv <= 3).slice(0, 3);
+  const anyRevenue = rankedByRevenue.some((p) => p.revenue > 0);
+  const topSellers = (anyRevenue ? rankedByRevenue.filter((p) => p.revenue > 0) : rankedByRevenue)
+    .slice(0, 5);
+
+  const lowStock = rankedByRevenue
+    .filter((p) => p.inv <= 3)
+    .sort((a, b) => a.inv - b.inv)
+    .slice(0, 6);
+
+  // items preview priority:
+  // 1) low stock items (most actionable)
+  // 2) top sellers (if we have revenue signal)
+  // 3) fallback to “top inventory” items (so the UI never feels empty)
+  let itemsPreview: Array<{ title: string; inv?: number; revenue?: number }> = [];
+
+  if (lowStock.length > 0) {
+    itemsPreview = lowStock.slice(0, 6).map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue }));
+  } else if (topSellers.length > 0) {
+    itemsPreview = topSellers.slice(0, 6).map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue }));
+  } else {
+    const topInventory = rankedByRevenue
+      .slice()
+      .sort((a, b) => b.inv - a.inv)
+      .slice(0, 6);
+    itemsPreview = topInventory.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue }));
+  }
 
   const indicators: IndicatorResult[] = [];
 
@@ -230,22 +265,40 @@ export async function evaluateSalesRhythmDrift(
     )}. Expected range: ${expectedLow}–${expectedHigh}.`,
   });
 
-  indicators.push({
-    key: "why_unknown",
-    label: "Why this might be happening",
-    status: "unknown",
-    confidence: "low",
-    evidence:
-      "This signal is based on order pace. Common causes are traffic drops, conversion issues (checkout/discounts), or stockouts.",
-  });
+  // If we have sessions analytics (optional), hint at traffic vs conversion
+  const sessionsToday = safeNumber(ctx.analytics?.sessions_today_so_far ?? 0);
+  const sessionsBaseline = safeNumber(ctx.analytics?.sessions_baseline_median ?? 0);
 
-  if (lowStockTopSellers.length > 0) {
+  if (sessionsToday > 0 && sessionsBaseline > 0) {
+    const trafficDown = sessionsToday < sessionsBaseline * 0.8;
     indicators.push({
-      key: "top_seller_stock_risk",
-      label: "A top seller may be constraining sales",
+      key: "traffic_signal",
+      label: "Traffic signal",
+      status: trafficDown ? "possible" : "unknown",
+      confidence: "low",
+      evidence: `Sessions so far: ${Math.round(sessionsToday)} vs baseline ~${Math.round(
+        sessionsBaseline
+      )}.`,
+    });
+  } else {
+    indicators.push({
+      key: "why_unknown",
+      label: "Why this might be happening",
+      status: "unknown",
+      confidence: "low",
+      evidence:
+        "Common causes are traffic drops, conversion issues (checkout/discounts), or stockouts on key items.",
+    });
+  }
+
+  if (lowStock.length > 0) {
+    indicators.push({
+      key: "stockout_risk",
+      label: "Low stock could be constraining sales",
       status: "possible",
       confidence: "medium",
-      evidence: `Low stock on top sellers: ${lowStockTopSellers
+      evidence: `Low stock items: ${lowStock
+        .slice(0, 4)
         .map((p) => `${p.title} (${p.inv})`)
         .join(", ")}.`,
     });
@@ -256,31 +309,43 @@ export async function evaluateSalesRhythmDrift(
       ? "Sales are far below your normal rhythm today"
       : "Sales are below your normal rhythm today";
 
+  // Crisp summary with at least one product hint when available
   const summaryParts: string[] = [];
   summaryParts.push(
     `Orders today are behind your usual pace for this time of day (${ordersTodayCount} vs ~${Math.round(
       baselineMedian
     )}).`
   );
-
-  if (lowStockTopSellers.length > 0) {
+  if (lowStock.length > 0) {
     summaryParts.push(
-      `Some top sellers are low on stock (${lowStockTopSellers
-        .map((p) => `${p.title} (${p.inv})`)
-        .join(", ")}).`
+      `Possible constraint: low stock on ${lowStock
+        .slice(0, 2)
+        .map((p) => p.title)
+        .join(" and ")}.`
     );
   }
 
   const suggested_action =
-    "Run a 2-minute storefront smoke test (product → cart → checkout) and confirm your top sellers are in stock.";
+    "Do this now: open your storefront and complete a quick product → cart → checkout test, then verify stock on the top items listed below.";
 
   const evaluatedAt = new Date().toISOString();
-  const nowLocal = toLocalParts(now, tz);
-  const nowLocalIso = `${nowLocal.y}-${String(nowLocal.m).padStart(2, "0")}-${String(
-    nowLocal.d
-  ).padStart(2, "0")}T${String(nowLocal.hh).padStart(2, "0")}:${String(
-    nowLocal.mm
-  ).padStart(2, "0")}:${String(nowLocal.ss).padStart(2, "0")}`;
+  const nowLocalIso = formatLocalIso(now, tz);
+
+  // IMPORTANT: Always provide evidence keys for UI “Key metrics”
+  const evidence: Record<string, any> = {
+    timezone: tz,
+    now_local_iso: nowLocalIso,
+    compared_window: comparedWindow,
+
+    orders_today_so_far: ordersTodayCount,
+    baseline_median: Math.round(baselineMedian),
+    expected_low: expectedLow,
+    expected_high: expectedHigh,
+    baseline_days_count: baselineCounts.length,
+
+    low_stock_count: lowStock.length,
+    top_sellers_count: topSellers.length,
+  };
 
   return {
     key: "sales_rhythm_drift",
@@ -294,23 +359,19 @@ export async function evaluateSalesRhythmDrift(
       compared_window: comparedWindow,
       now_local_iso: nowLocalIso,
       orders_today_so_far: ordersTodayCount,
-      baseline_median: Math.round(baselineMedian * 100) / 100,
-      baseline_p25: Math.round(baselineP25 * 100) / 100,
-      baseline_p75: Math.round(baselineP75 * 100) / 100,
+      baseline_median: round2(baselineMedian),
+      baseline_p25: round2(baselineP25),
+      baseline_p75: round2(baselineP75),
       expected_low: expectedLow,
       expected_high: expectedHigh,
       baseline_days_count: baselineCounts.length,
       guard_minutes: guardMinutes,
     },
     evidence: {
-      top_sellers: topSellers.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue })),
-      low_stock_top_sellers: lowStockTopSellers.map((p) => ({
-        title: p.title,
-        inv: p.inv,
-        revenue: p.revenue,
-      })),
+      ...evidence,
+      items_preview: itemsPreview, // helps your pipeline if you want to copy over
     },
-    items: lowStockTopSellers.map((p) => ({ title: p.title, inv: p.inv, revenue: p.revenue })),
+    items: itemsPreview, // primary preview list for the UI/email
     evaluated_at: evaluatedAt,
   };
 }
