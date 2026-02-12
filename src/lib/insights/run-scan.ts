@@ -95,8 +95,7 @@ function toInsightOutput(input: any): InsightOutput | null {
   if (!type) return null;
 
   const title =
-    String(input?.title || "").trim() ||
-    `Issue detected: ${type.replaceAll("_", " ")}`;
+    String(input?.title || "").trim() || `Issue detected: ${type.replaceAll("_", " ")}`;
 
   const description =
     String(input?.description || "").trim() ||
@@ -137,7 +136,12 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
       ? out.items.slice(0, 5).map((x: any) => {
           if (!x || typeof x !== "object") return x;
           const t = x.title || x.name || x.product_title;
-          const inv = x.inv ?? x.inventory ?? x.totalInventory ?? x.inventory_quantity ?? x.inventory;
+          const inv =
+            x.inv ??
+            x.inventory ??
+            x.totalInventory ??
+            x.inventory_quantity ??
+            x.inventory;
           const days = x.days_since_last_sale ?? x.days ?? x.daysSince;
           return { title: t, inv, days, bucket: x.bucket };
         })
@@ -166,52 +170,42 @@ function toDbInsight(shopId: string, out: InsightOutput): DbInsight {
   };
 }
 
-// ----- Scheduling: next 11am in shop timezone; stored as UTC ISO -----
-function getNext11AmISO(shopTimezone: string) {
+/**
+ * Next scan is the next daily cron window at 16:00 UTC.
+ * (Matches vercel.json: "0 16 * * *")
+ */
+function getNextDailyCronISO(utcHour = 16) {
   const now = new Date();
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), utcHour, 0, 0));
 
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: shopTimezone || "UTC",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(now);
+  if (now.getTime() >= next.getTime()) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
 
-  const get = (t: string) => parts.find((p) => p.type === t)?.value;
-  const y = Number(get("year"));
-  const m = Number(get("month"));
-  const d = Number(get("day"));
-  const hour = Number(get("hour"));
-
-  const candidateUtc = new Date(Date.UTC(y, m - 1, d, 11, 0, 0));
-  if (Number.isFinite(hour) && hour >= 11) candidateUtc.setUTCDate(candidateUtc.getUTCDate() + 1);
-
-  return candidateUtc.toISOString();
+  return next.toISOString();
 }
 
 async function writeScanRun(args: {
   shopId: string;
-  shopTimezone: string;
   status: "ok" | "error";
   summary: any;
 }) {
   const nowIso = new Date().toISOString();
-  const nextIso = getNext11AmISO(args.shopTimezone || "UTC");
+  const nextIso = getNextDailyCronISO(16);
 
-  const { error } = await supabase.from("scan_runs").upsert(
-    {
-      shop_id: args.shopId,
-      last_scan_at: nowIso,
-      next_scan_at: nextIso,
-      last_scan_status: args.status,
-      last_scan_summary: args.summary,
-      updated_at: nowIso,
-    },
-    { onConflict: "shop_id" }
-  );
+  const { error } = await supabase
+    .from("scan_runs")
+    .upsert(
+      {
+        shop_id: args.shopId,
+        last_scan_at: nowIso,
+        next_scan_at: nextIso,
+        last_scan_status: args.status,
+        last_scan_summary: args.summary,
+        updated_at: nowIso,
+      },
+      { onConflict: "shop_id" }
+    );
 
   if (error) console.log("SCAN_RUN_WRITE_FAILED", error.message);
 }
@@ -262,6 +256,7 @@ function renderDailyEmailText(args: { shopDomain: string; insights: any[] }) {
     lines.push(`[${sev}] ${i.title}`);
     if (i.description) lines.push(`- ${String(i.description)}`);
     if (i.suggested_action) lines.push(`- Action: ${String(i.suggested_action)}`);
+
     const preview = i?.data_snapshot?.items_preview;
     if (Array.isArray(preview) && preview.length) {
       lines.push(`- Items: ${preview.map((x: any) => x?.title || "Item").join(", ")}`);
@@ -274,7 +269,7 @@ function renderDailyEmailText(args: { shopDomain: string; insights: any[] }) {
   return lines.join("\n");
 }
 
-// ---- Inventory pressure ----
+// ---- Inventory pressure (shopify data) ----
 function evaluateInventoryPressureFromShopifyData(data: any) {
   const edges = data?.products?.edges ?? [];
   const nodes = Array.isArray(edges) ? edges.map((e: any) => e?.node).filter(Boolean) : [];
@@ -319,7 +314,7 @@ function evaluateInventoryPressureFromShopifyData(data: any) {
   };
 }
 
-// ---- Dead inventory ----
+// ---- Dead inventory (shopify data) ----
 function evaluateDeadInventoryFromShopifyData(
   data: any,
   opts?: { windowDays?: number; minStock?: number }
@@ -452,7 +447,6 @@ export async function runScanForShop(args: {
   const skipped: Array<{ type: string; reason: string }> = [];
 
   let data: any = null;
-  let shopTimezone = "UTC";
 
   try {
     const sinceIso = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
@@ -464,8 +458,6 @@ export async function runScanForShop(args: {
       query: INSIGHT_CONTEXT_QUERY,
       variables: { ordersQuery },
     });
-
-    shopTimezone = data?.shop?.ianaTimezone || "UTC";
 
     const ctx = buildInsightContext(args.shopDomain, new Date(), data);
 
@@ -531,12 +523,11 @@ export async function runScanForShop(args: {
     // Always write scan_runs (ok)
     await writeScanRun({
       shopId: args.shopId,
-      shopTimezone,
       status: "ok",
       summary,
     });
 
-    // Email only on auto runs, and only once per UTC day.
+    // Email: only on auto runs, only if digest_settings.email present + daily_enabled, and only once per UTC day
     if (args.mode === "auto") {
       try {
         const { data: settings } = await supabase
@@ -546,8 +537,8 @@ export async function runScanForShop(args: {
           .maybeSingle();
 
         if (settings?.daily_enabled && settings?.email) {
-          // check email_sent_on in scan_runs.last_scan_summary
           const today = todayKeyUTC();
+
           const { data: runRow } = await supabase
             .from("scan_runs")
             .select("last_scan_summary")
@@ -558,27 +549,30 @@ export async function runScanForShop(args: {
 
           if (!alreadySent) {
             const actionable = await getActionableInsightsForEmail(args.shopId);
+
             if (Array.isArray(actionable) && actionable.length > 0) {
               const subject = `MerchPulse — ${actionable.length} issue${actionable.length > 1 ? "s" : ""} need attention`;
               const text = renderDailyEmailText({ shopDomain: args.shopDomain, insights: actionable });
 
               await sendDailyDigestEmail({ to: settings.email, subject, body: text });
 
-              // record sent marker (merge, don’t wipe)
+              // Merge marker into last_scan_summary (do not wipe)
               const merged = {
                 ...(summary || {}),
                 email_sent_on: today,
                 emailed_to: settings.email,
               };
 
-              await supabase.from("scan_runs").upsert(
-                {
-                  shop_id: args.shopId,
-                  last_scan_summary: merged,
-                  updated_at: new Date().toISOString(),
-                },
-                { onConflict: "shop_id" }
-              );
+              await supabase
+                .from("scan_runs")
+                .upsert(
+                  {
+                    shop_id: args.shopId,
+                    last_scan_summary: merged,
+                    updated_at: new Date().toISOString(),
+                  },
+                  { onConflict: "shop_id" }
+                );
             }
           }
         }
@@ -596,10 +590,8 @@ export async function runScanForShop(args: {
       skipped,
     };
 
-    // Still write scan_runs (error), so UI + cron schedule stays sane
     await writeScanRun({
       shopId: args.shopId,
-      shopTimezone,
       status: "error",
       summary: errSummary,
     });
