@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import crypto from "crypto";
+import { signSessionCookie } from "@/lib/shopify";
+import { registerPrivacyWebhooks } from "@/lib/shopify/register-privacy-webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +19,21 @@ function decodeState(state?: string | null): { host?: string } {
   } catch {
     return {};
   }
+}
+
+// OPTIONAL but recommended: verify OAuth callback query HMAC
+function verifyOAuthHmac(url: URL) {
+  const hmac = url.searchParams.get("hmac") || "";
+  if (!hmac) return true; // don't hard-fail if Shopify doesn't include it in some flows
+
+  const params = Array.from(url.searchParams.entries())
+    .filter(([k]) => k !== "hmac" && k !== "signature")
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
+
+  const digest = crypto.createHmac("sha256", API_SECRET).update(params).digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac));
 }
 
 async function exchangeCodeForToken(shop: string, code: string) {
@@ -38,7 +56,6 @@ async function exchangeCodeForToken(shop: string, code: string) {
 
   if (!res.ok) throw new Error(`Token exchange failed ${res.status}: ${text?.slice(0, 300)}`);
   if (!json?.access_token) throw new Error(`Token exchange missing access_token: ${text?.slice(0, 300)}`);
-
   return json.access_token as string;
 }
 
@@ -71,10 +88,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Invalid shop", shop }, { status: 400 });
   }
 
+  // Optional (recommended) OAuth HMAC verification
+  if (!verifyOAuthHmac(new URL(req.url))) {
+    return NextResponse.json({ ok: false, error: "Invalid OAuth HMAC" }, { status: 401 });
+  }
+
   try {
     const access_token = await exchangeCodeForToken(shop, code);
 
-    // IMPORTANT: specify conflict target so it truly upserts
+    // Store token (upsert)
     const { error } = await supabase
       .from("shops")
       .upsert(
@@ -95,9 +117,23 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Send them back to the app entry (canonical router)
+    // ✅ Register privacy webhooks immediately after install
+    // (This is what Shopify automated checks want to see)
+    try {
+      await registerPrivacyWebhooks({ shop, accessToken: access_token });
+    } catch (e: any) {
+      console.log("REGISTER_PRIVACY_WEBHOOKS_FAILED", e?.message || String(e));
+      // Don't block install UX, but you'll want this fixed for review.
+    }
+
+    // ✅ Set session cookie so embedded UI + API calls don't 401
+    const cookie = await signSessionCookie(shop);
+
+    // Redirect back into embedded app
     const target = `${APP_URL}/app?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
-    return NextResponse.redirect(target, 302);
+    const res = NextResponse.redirect(target, 302);
+    res.headers.set("Set-Cookie", cookie);
+    return res;
   } catch (e: any) {
     console.log("AUTH_CALLBACK_FAILED", { message: e?.message || String(e) });
     return NextResponse.json(
