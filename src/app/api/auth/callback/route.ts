@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
 import crypto from "crypto";
+import { supabase } from "@/lib/supabase";
 import { signSessionCookie } from "@/lib/shopify";
 import { registerPrivacyWebhooks } from "@/lib/shopify/register-privacy-webhooks";
 
@@ -21,19 +21,30 @@ function decodeState(state?: string | null): { host?: string } {
   }
 }
 
-// OPTIONAL but recommended: verify OAuth callback query HMAC
+// Shopify OAuth HMAC verification
 function verifyOAuthHmac(url: URL) {
-  const hmac = url.searchParams.get("hmac") || "";
-  if (!hmac) return true; // don't hard-fail if Shopify doesn't include it in some flows
+  const provided = url.searchParams.get("hmac") || "";
+  const params: Record<string, string> = {};
 
-  const params = Array.from(url.searchParams.entries())
-    .filter(([k]) => k !== "hmac" && k !== "signature")
-    .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([k, v]) => `${k}=${v}`)
+  // Shopify wants all query params except `hmac` and `signature`
+  url.searchParams.forEach((value, key) => {
+    if (key === "hmac" || key === "signature") return;
+    params[key] = value;
+  });
+
+  const message = Object.keys(params)
+    .sort()
+    .map((k) => `${k}=${params[k]}`)
     .join("&");
 
-  const digest = crypto.createHmac("sha256", API_SECRET).update(params).digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac));
+  const digest = crypto.createHmac("sha256", API_SECRET).update(message).digest("hex");
+
+  // timing-safe compare
+  const a = Buffer.from(digest, "utf8");
+  const b = Buffer.from(provided, "utf8");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    throw new Error("Invalid OAuth HMAC");
+  }
 }
 
 async function exchangeCodeForToken(shop: string, code: string) {
@@ -56,6 +67,7 @@ async function exchangeCodeForToken(shop: string, code: string) {
 
   if (!res.ok) throw new Error(`Token exchange failed ${res.status}: ${text?.slice(0, 300)}`);
   if (!json?.access_token) throw new Error(`Token exchange missing access_token: ${text?.slice(0, 300)}`);
+
   return json.access_token as string;
 }
 
@@ -64,7 +76,6 @@ export async function GET(req: NextRequest) {
   const code = (req.nextUrl.searchParams.get("code") || "").trim();
   const hostParam = (req.nextUrl.searchParams.get("host") || "").trim();
   const state = req.nextUrl.searchParams.get("state");
-
   const host = hostParam || decodeState(state).host || "";
 
   console.log("AUTH_CALLBACK_HIT", {
@@ -79,24 +90,19 @@ export async function GET(req: NextRequest) {
   if (!API_SECRET) return NextResponse.json({ ok: false, error: "Missing SHOPIFY_API_SECRET" }, { status: 500 });
 
   if (!shop || !code) {
-    return NextResponse.json(
-      { ok: false, error: "Missing shop or code", shop, hasCode: Boolean(code) },
-      { status: 400 }
-    );
+    return NextResponse.json({ ok: false, error: "Missing shop or code", shop, hasCode: Boolean(code) }, { status: 400 });
   }
   if (!shop.endsWith(".myshopify.com")) {
     return NextResponse.json({ ok: false, error: "Invalid shop", shop }, { status: 400 });
   }
 
-  // Optional (recommended) OAuth HMAC verification
-  if (!verifyOAuthHmac(new URL(req.url))) {
-    return NextResponse.json({ ok: false, error: "Invalid OAuth HMAC" }, { status: 401 });
-  }
-
   try {
+    // ✅ Shopify automated review expects you to validate OAuth HMAC
+    verifyOAuthHmac(req.nextUrl);
+
     const access_token = await exchangeCodeForToken(shop, code);
 
-    // Store token (upsert)
+    // ✅ Persist shop install (upsert)
     const { error } = await supabase
       .from("shops")
       .upsert(
@@ -111,34 +117,23 @@ export async function GET(req: NextRequest) {
 
     if (error) {
       console.log("SHOP_UPSERT_FAILED", { message: error.message });
-      return NextResponse.json(
-        { ok: false, error: "Failed to persist shop", details: error.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ ok: false, error: "Failed to persist shop", details: error.message }, { status: 500 });
     }
 
-    // ✅ Register privacy webhooks immediately after install
-    // (This is what Shopify automated checks want to see)
-    try {
-      await registerPrivacyWebhooks({ shop, accessToken: access_token });
-    } catch (e: any) {
-      console.log("REGISTER_PRIVACY_WEBHOOKS_FAILED", e?.message || String(e));
-      // Don't block install UX, but you'll want this fixed for review.
-    }
-
-    // ✅ Set session cookie so embedded UI + API calls don't 401
+    // ✅ Set session cookie so app loads after install without “Missing shop context”
     const cookie = await signSessionCookie(shop);
 
-    // Redirect back into embedded app
+    // ✅ Compliance webhooks: create endpoints + configure in Shopify app dashboard.
+    // This helper is a no-op in code (see file below), but keeps your imports stable.
+    await registerPrivacyWebhooks({ shopDomain: shop });
+
+    // ✅ Redirect to embedded app UI
     const target = `${APP_URL}/app?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
     const res = NextResponse.redirect(target, 302);
     res.headers.set("Set-Cookie", cookie);
     return res;
   } catch (e: any) {
     console.log("AUTH_CALLBACK_FAILED", { message: e?.message || String(e) });
-    return NextResponse.json(
-      { ok: false, error: "Callback failed", details: e?.message || String(e) },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: "Callback failed", details: e?.message || String(e) }, { status: 500 });
   }
 }

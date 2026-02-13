@@ -33,7 +33,7 @@ export class HttpError extends Error {
 }
 
 function getSessionSecret() {
-  const secret = process.env.SESSION_SECRET;
+  const secret = process.env.SESSION_SECRET || process.env.SHOPIFY_API_SECRET;
   if (!secret) throw new Error("SESSION_SECRET is required");
   return new TextEncoder().encode(secret);
 }
