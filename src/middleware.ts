@@ -1,53 +1,37 @@
-// middleware.ts (FULL REPLACEMENT)
 import { NextRequest, NextResponse } from "next/server";
 import { decodeShopFromBearer, readSessionFromCookie } from "./lib/shopify";
 
-const PASS_THROUGH = [
+// Allow these without shop context
+const OPEN_ROUTES = [
   "/api/auth/start",
   "/api/auth/callback",
   "/api/cron/scan",
+  "/api/webhooks", // allow ALL webhooks
   "/api/install-status",
+  "/api/debug",
 ];
 
 export async function middleware(req: NextRequest) {
-  const { pathname, searchParams } = req.nextUrl;
+  const { pathname } = req.nextUrl;
 
-  // Always allow these routes through
-  if (PASS_THROUGH.some((r) => pathname.startsWith(r))) {
-    return NextResponse.next();
-  }
-  if (pathname.startsWith("/api/debug")) {
+  if (OPEN_ROUTES.some((r) => pathname.startsWith(r))) {
     return NextResponse.next();
   }
 
-  // Determine shop from App Bridge bearer OR session cookie
+  // Only protect /api routes
+  if (!pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+
   const authHeader = req.headers.get("authorization") || undefined;
   const bearerShop = await decodeShopFromBearer(authHeader);
 
   const cookieHeader = req.headers.get("cookie") || undefined;
   const cookieShop = await readSessionFromCookie(cookieHeader);
 
-  const shop = (bearerShop || cookieShop || "").toLowerCase();
+  const shop = bearerShop || cookieShop;
 
   if (!shop) {
-    // If this is a browser navigation / page-like request, redirect to your app error page
-    // so Shopify can relaunch correctly with host + shop.
-    const accept = req.headers.get("accept") || "";
-    const looksLikeBrowserNav =
-      req.method === "GET" && (accept.includes("text/html") || accept.includes("*/*"));
-
-    if (looksLikeBrowserNav) {
-      const url = req.nextUrl.clone();
-      url.pathname = "/app/error";
-      // preserve host/shop if present
-      const host = searchParams.get("host");
-      const shopParam = searchParams.get("shop");
-      if (host) url.searchParams.set("host", host);
-      if (shopParam) url.searchParams.set("shop", shopParam);
-      return NextResponse.redirect(url);
-    }
-
-    // For API calls, return JSON 401
     return NextResponse.json({ error: "Missing shop context" }, { status: 401 });
   }
 
