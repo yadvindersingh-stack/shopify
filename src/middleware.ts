@@ -9,6 +9,7 @@ const OPEN_ROUTES = [
   "/api/webhooks", // allow ALL webhooks
   "/api/install-status",
   "/api/debug",
+   "/api/webhooks/privacy",
 ];
 
 export async function middleware(req: NextRequest) {
