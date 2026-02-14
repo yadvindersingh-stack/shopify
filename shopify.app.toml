@@ -12,20 +12,12 @@ automatically_update_urls_on_dev = true
 api_version = "2025-10"
 
 [[webhooks.subscriptions]]
-topics = [ "app/uninstalled" ]
-uri = "https://merchpulse.vercel.app/api/webhooks/app/uninstalled"
+topics = ["app/uninstalled"]
+uri = "https://merchpulse.vercel.app/api/webhooks"
 
 [[webhooks.subscriptions]]
-compliance_topics = [ "customers/data_request" ]
-uri = "https://merchpulse.vercel.app/api/webhooks/customers/data_request"
-
-[[webhooks.subscriptions]]
-compliance_topics = [ "customers/redact" ]
-uri = "https://merchpulse.vercel.app/api/webhooks/customers/redact"
-
-[[webhooks.subscriptions]]
-compliance_topics = [ "shop/redact" ]
-uri = "https://merchpulse.vercel.app/api/webhooks/shop/redact"
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "https://merchpulse.vercel.app/api/webhooks"
 
 
 [access_scopes]

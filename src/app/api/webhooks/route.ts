@@ -1,3 +1,4 @@
+// src/app/api/webhooks/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabase } from "@/lib/supabase";
@@ -7,16 +8,15 @@ export const dynamic = "force-dynamic";
 
 const API_SECRET = process.env.SHOPIFY_API_SECRET || "";
 
-function verifyWebhookHmac(rawBody: string, hmacHeader: string) {
+function verifyWebhookHmac(rawBody: Buffer, hmacHeader: string) {
   if (!API_SECRET) throw new Error("Missing SHOPIFY_API_SECRET");
   if (!hmacHeader) throw new Error("Missing X-Shopify-Hmac-Sha256");
 
-  const digest = crypto
-    .createHmac("sha256", API_SECRET)
-    .update(rawBody, "utf8")
-    .digest("base64");
+  // Shopify expects base64 digest of the raw request body bytes
+  const digestBase64 = crypto.createHmac("sha256", API_SECRET).update(rawBody).digest("base64");
 
-  const a = Buffer.from(digest, "utf8");
+  // Timing-safe compare (compare the raw base64 strings as bytes)
+  const a = Buffer.from(digestBase64, "utf8");
   const b = Buffer.from(hmacHeader, "utf8");
 
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
@@ -29,21 +29,23 @@ export async function POST(req: NextRequest) {
   const shop = (req.headers.get("x-shopify-shop-domain") || "").toLowerCase();
   const hmac = req.headers.get("x-shopify-hmac-sha256") || "";
 
-  const rawBody = await req.text();
+  const rawBytes = Buffer.from(await req.arrayBuffer());
 
-  // ✅ HMAC verify FIRST. Return 400 on invalid signature (Shopify checks this).
   try {
-    verifyWebhookHmac(rawBody, hmac);
+    verifyWebhookHmac(rawBytes, hmac);
   } catch (e: any) {
     console.log("WEBHOOK_HMAC_FAILED", {
       topic,
       shop,
       message: e?.message || String(e),
+      hasSecret: Boolean(API_SECRET),
+      hasHmacHeader: Boolean(hmac),
     });
-    return NextResponse.json({ ok: false }, { status: 400 });
+    // Shopify requires 401 on invalid HMAC for compliance webhook checks
+    return new NextResponse("Unauthorized", { status: 401 });
   }
 
-  // Always ack quickly (200) once verified
+  // Ack quickly with 200-series for valid requests
   try {
     if (!shop || !shop.endsWith(".myshopify.com")) {
       console.log("WEBHOOK_BAD_SHOP", { topic, shop });
@@ -57,11 +59,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    if (
-      topic === "customers/data_request" ||
-      topic === "customers/redact" ||
-      topic === "shop/redact"
-    ) {
+    if (topic === "customers/data_request" || topic === "customers/redact" || topic === "shop/redact") {
       console.log("WEBHOOK_COMPLIANCE_OK", { topic, shop });
       return NextResponse.json({ ok: true }, { status: 200 });
     }
@@ -70,7 +68,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e: any) {
     console.log("WEBHOOK_HANDLER_FAILED", { topic, shop, message: e?.message || String(e) });
-    // For visibility during review/testing
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 }
