@@ -125,7 +125,7 @@ export async function GET(req: NextRequest) {
 
     // ✅ Compliance webhooks: create endpoints + configure in Shopify app dashboard.
     // This helper is a no-op in code (see file below), but keeps your imports stable.
-    await registerPrivacyWebhooks({ shopDomain: shop });
+    await registerPrivacyWebhooks({ shop, accessToken: access_token });
 
     // ✅ Redirect to embedded app UI
     const target = `${APP_URL}/app?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;

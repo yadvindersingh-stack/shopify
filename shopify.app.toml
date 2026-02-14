@@ -9,17 +9,16 @@ embedded = true
 automatically_update_urls_on_dev = true
 
 [webhooks]
-api_version = "2026-04"
+api_version = "2024-10"
 
 [[webhooks.subscriptions]]
 topics = [ "app/uninstalled" ]
 compliance_topics = [ "customers/redact", "customers/data_request", "shop/redact" ]
-uri = "api/webhooks"
-
+uri = "/api/webhooks"
 
 [access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = ""
+scopes = "read_orders,read_products,read_customers,read_analytics,read_inventory"
+
 
 [auth]
 redirect_urls = ["https://merchpulse.vercel.app/api/auth/callback"]
