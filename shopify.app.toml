@@ -9,15 +9,23 @@ embedded = true
 automatically_update_urls_on_dev = true
 
 [webhooks]
-api_version = "2024-10"
+api_version = "2026-04"
 
 [[webhooks.subscriptions]]
-topics = ["app/uninstalled"]
-uri = "/api/webhooks"
+topics = [ "app/uninstalled" ]
+uri = "/api/webhooks"   # ok to keep generic for uninstall
 
 [[webhooks.subscriptions]]
-compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
-uri = "/api/webhooks"
+compliance_topics = [ "customers/data_request" ]
+uri = "/api/webhooks/customers/data_request"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "customers/redact" ]
+uri = "/api/webhooks/customers/redact"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "shop/redact" ]
+uri = "/api/webhooks/shop/redact"
 
 
 [access_scopes]

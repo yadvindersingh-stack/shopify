@@ -1,28 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { decodeShopFromBearer, readSessionFromCookie } from "./lib/shopify";
 
-// Allow these without shop context
-const OPEN_ROUTES = [
+// Allow Shopify to hit these endpoints without your embedded session context.
+const PUBLIC_API_ROUTES = [
   "/api/auth/start",
   "/api/auth/callback",
+
+  // Cron entrypoint
   "/api/cron/scan",
-  "/api/webhooks", // allow ALL webhooks
-  "/api/install-status",
-  "/api/debug",
-   "/api/webhooks/privacy",
+
+  // Webhooks entrypoints (Shopify calls these server-to-server)
+  "/api/webhooks",
 ];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (OPEN_ROUTES.some((r) => pathname.startsWith(r))) {
+  if (PUBLIC_API_ROUTES.some((r) => pathname.startsWith(r))) {
     return NextResponse.next();
   }
 
-  // Only protect /api routes
-  if (!pathname.startsWith("/api/")) {
-    return NextResponse.next();
-  }
+  // keep your existing debug/install exceptions
+  if (pathname.startsWith("/api/debug")) return NextResponse.next();
+  if (pathname.startsWith("/api/install-status")) return NextResponse.next();
 
   const authHeader = req.headers.get("authorization") || undefined;
   const bearerShop = await decodeShopFromBearer(authHeader);
