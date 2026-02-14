@@ -1,10 +1,12 @@
-// Privacy/compliance webhooks are configured in shopify.app.toml (Shopify-managed).
-// Do NOT attempt to create these topics via REST from your app.
-// This module exists only to avoid broken imports while you refactor.
+// src/lib/shopify/register-privacy-webhooks.ts
 
-export async function registerPrivacyWebhooks(_args: {
-  shop: string;
-  accessToken: string;
-}) {
+/**
+ * Shopify privacy/compliance webhooks should be configured in shopify.toml (CLI)
+ * and in the Partner Dashboard, not created via REST from your callback.
+ *
+ * If you try to create topics like customers/data_request via REST in some API versions,
+ * Shopify can return 404. So we intentionally no-op here.
+ */
+export async function registerPrivacyWebhooks(_args: { shopDomain: string }) {
   return { ok: true, skipped: true };
 }

@@ -1,3 +1,5 @@
+// src/app/api/auth/callback/route.ts
+
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabase } from "@/lib/supabase";
@@ -8,8 +10,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const APP_URL = (process.env.SHOPIFY_APP_URL || "").replace(/\/$/, "");
-const API_KEY = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY!;
-const API_SECRET = process.env.SHOPIFY_API_SECRET!;
+const API_KEY = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
+const API_SECRET = process.env.SHOPIFY_API_SECRET || "";
 
 function decodeState(state?: string | null): { host?: string } {
   if (!state) return {};
@@ -21,12 +23,15 @@ function decodeState(state?: string | null): { host?: string } {
   }
 }
 
-// Shopify OAuth HMAC verification
+/**
+ * Shopify OAuth HMAC verification.
+ * Shopify wants all query params except `hmac` and `signature`, sorted, joined as k=v&...
+ */
 function verifyOAuthHmac(url: URL) {
   const provided = url.searchParams.get("hmac") || "";
-  const params: Record<string, string> = {};
+  if (!provided) throw new Error("Missing OAuth hmac");
 
-  // Shopify wants all query params except `hmac` and `signature`
+  const params: Record<string, string> = {};
   url.searchParams.forEach((value, key) => {
     if (key === "hmac" || key === "signature") return;
     params[key] = value;
@@ -65,8 +70,8 @@ async function exchangeCodeForToken(shop: string, code: string) {
     json = text ? JSON.parse(text) : null;
   } catch {}
 
-  if (!res.ok) throw new Error(`Token exchange failed ${res.status}: ${text?.slice(0, 300)}`);
-  if (!json?.access_token) throw new Error(`Token exchange missing access_token: ${text?.slice(0, 300)}`);
+  if (!res.ok) throw new Error(`Token exchange failed ${res.status}: ${text?.slice(0, 500)}`);
+  if (!json?.access_token) throw new Error(`Token exchange missing access_token: ${text?.slice(0, 500)}`);
 
   return json.access_token as string;
 }
@@ -97,12 +102,12 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // ✅ Shopify automated review expects you to validate OAuth HMAC
+    // Shopify automated review expects OAuth HMAC validation
     verifyOAuthHmac(req.nextUrl);
 
     const access_token = await exchangeCodeForToken(shop, code);
 
-    // ✅ Persist shop install (upsert)
+    // Persist install
     const { error } = await supabase
       .from("shops")
       .upsert(
@@ -120,14 +125,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Failed to persist shop", details: error.message }, { status: 500 });
     }
 
-    // ✅ Set session cookie so app loads after install without “Missing shop context”
+    // session cookie so app loads post-install (prevents Missing shop context)
     const cookie = await signSessionCookie(shop);
 
-    // ✅ Compliance webhooks: create endpoints + configure in Shopify app dashboard.
-    // This helper is a no-op in code (see file below), but keeps your imports stable.
-    await registerPrivacyWebhooks({ shop, accessToken: access_token });
+    // Keep import stable; do not REST-create privacy webhooks here
+    await registerPrivacyWebhooks({ shopDomain: shop });
 
-    // ✅ Redirect to embedded app UI
     const target = `${APP_URL}/app?shop=${encodeURIComponent(shop)}&host=${encodeURIComponent(host)}`;
     const res = NextResponse.redirect(target, 302);
     res.headers.set("Set-Cookie", cookie);
