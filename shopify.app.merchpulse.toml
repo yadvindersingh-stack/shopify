@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "3d3d641d69affa2d21903ec602e98fef"
-name = "MerchPulse"
+name = "storepulse"
 application_url = "https://merchpulse.vercel.app"
 embedded = true
 
@@ -9,11 +9,20 @@ embedded = true
 automatically_update_urls_on_dev = true
 
 [webhooks]
-api_version = "2026-04"
+api_version = "2025-10"
+
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "https://merchpulse.vercel.app/api/webhooks"
+
+[[webhooks.subscriptions]]
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "https://merchpulse.vercel.app/api/webhooks"
+
 
 [access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = ""
+scopes = "read_orders,read_products,read_customers,read_analytics,read_inventory"
+
 
 [auth]
 redirect_urls = ["https://merchpulse.vercel.app/api/auth/callback"]
