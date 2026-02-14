@@ -1,44 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
 import { supabase } from "@/lib/supabase";
+import { verifyShopifyWebhookHmac } from "@/lib/shopify/verify-webhook";
 
 export const runtime = "nodejs";
-
-function verifyHmac(rawBody: string, hmacHeader: string | null) {
-  if (!hmacHeader) return false;
-
-  const secret = process.env.SHOPIFY_API_SECRET;
-  if (!secret) throw new Error("SHOPIFY_API_SECRET missing");
-
-  const generated = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody, "utf8")
-    .digest("base64");
-
-  return crypto.timingSafeEqual(
-    Buffer.from(generated),
-    Buffer.from(hmacHeader)
-  );
-}
+export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  const rawBody = await req.text();
+  const shop = (req.headers.get("x-shopify-shop-domain") || "").toLowerCase();
   const hmac = req.headers.get("x-shopify-hmac-sha256");
-  const shop = req.headers.get("x-shopify-shop-domain");
 
-  if (!verifyHmac(rawBody, hmac)) {
-    return new NextResponse("Invalid HMAC", { status: 401 });
+  const raw = Buffer.from(await req.arrayBuffer());
+
+  try {
+    verifyShopifyWebhookHmac({ rawBody: raw, hmacHeader: hmac });
+  } catch (e: any) {
+    console.log("WEBHOOK_HMAC_FAILED", { route: "app/uninstalled", shop, message: e?.message });
+    // Important: return 400 (Shopify automated tests expect 400 on invalid HMAC)
+    return new NextResponse("Invalid HMAC", { status: 400 });
   }
 
-  if (!shop) {
-    return new NextResponse("Missing shop", { status: 400 });
+  try {
+    if (shop && shop.endsWith(".myshopify.com")) {
+      const { error } = await supabase.from("shops").delete().eq("shop_domain", shop);
+      if (error) console.log("WEBHOOK_UNINSTALLED_DB_ERR", { shop, message: error.message });
+    }
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    console.log("WEBHOOK_HANDLER_FAILED", { route: "app/uninstalled", shop, message: e?.message });
+    return NextResponse.json({ ok: true }); // still ack
   }
-
-  // 🔥 CRITICAL: delete shop + cascade related data
-  await supabase
-    .from("shops")
-    .delete()
-    .eq("shop_domain", shop);
-
-  return NextResponse.json({ ok: true });
 }

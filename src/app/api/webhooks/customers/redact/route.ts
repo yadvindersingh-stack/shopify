@@ -1,9 +1,21 @@
-import { NextRequest } from "next/server";
-import { handleShopifyWebhook } from "@/lib/webhooks/handle-shopify-webhook";
+import { NextRequest, NextResponse } from "next/server";
+import { verifyShopifyWebhookHmac } from "@/lib/shopify/verify-webhook";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  return handleShopifyWebhook(req, "customers/redact");
+  const shop = (req.headers.get("x-shopify-shop-domain") || "").toLowerCase();
+  const hmac = req.headers.get("x-shopify-hmac-sha256");
+
+  const raw = Buffer.from(await req.arrayBuffer());
+
+  try {
+    verifyShopifyWebhookHmac({ rawBody: raw, hmacHeader: hmac });
+  } catch (e: any) {
+    console.log("WEBHOOK_HMAC_FAILED", { route: "customers/redact", shop, message: e?.message });
+    return new NextResponse("Invalid HMAC", { status: 400 });
+  }
+
+  return NextResponse.json({ ok: true });
 }
