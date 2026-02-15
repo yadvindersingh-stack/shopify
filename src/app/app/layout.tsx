@@ -1,9 +1,8 @@
-// ...existing code...
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
 import "../globals.css";
 import "@shopify/polaris/build/esm/styles.css";
-// ...existing code...
 import PolarisProvider from "../polaris-provider";
 import { Suspense } from "react";
 
@@ -27,11 +26,23 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY;
+
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <head>
+        {/* Required for Shopify App Bridge (CDN) */}
+        {apiKey ? (
+          <meta name="shopify-api-key" content={apiKey} />
+        ) : null}
+
+        <Script
+          src="https://cdn.shopify.com/shopifycloud/app-bridge.js"
+          strategy="beforeInteractive"
+        />
+      </head>
+
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <Suspense fallback={null}>
           <PolarisProvider>{children}</PolarisProvider>
         </Suspense>
