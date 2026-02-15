@@ -19,7 +19,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <html lang="en">
-    
+      <head>
+        {/* Must be present */}
+        {apiKey ? <meta name="shopify-api-key" content={apiKey} /> : null}
+
+        {/* Must be FIRST script, NOT async/defer/module */}
+        <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+      </head>
 
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <Suspense fallback={null}>
