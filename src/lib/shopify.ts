@@ -119,12 +119,14 @@ export type ShopRecord = {
   access_token: string;
   email?: string | null;
   timezone?: string | null;
+  billing_status?: string | null;
+  plan?: string | null;
 };
 
 export async function getShopRecord(shop_domain: string): Promise<ShopRecord | null> {
   const { data, error } = await supabase
     .from("shops")
-    .select("id, shop_domain, access_token, email, timezone")
+    .select("id, shop_domain, access_token, email, timezone, billing_status, plan")
     .eq("shop_domain", shop_domain)
     .maybeSingle();
 
@@ -152,6 +154,9 @@ export async function resolveShop(req: Request): Promise<ShopRecord> {
  const record = await getShopRecord(shop);
 if (!record) {
   throw new HttpError(403, "Shop not installed");
+}
+if (record.billing_status !== "active") {
+  throw new HttpError(402, "Payment required");
 }
 return record;
 }

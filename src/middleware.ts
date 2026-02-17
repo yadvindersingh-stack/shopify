@@ -8,6 +8,7 @@ const PUBLIC_API_ROUTES = [
   "/api/cron/scan",
   "/api/webhooks", // ✅ IMPORTANT: allow Shopify webhook delivery + automated checks
   "/api/install-status",
+  "/api/billing",
 ];
 
 export async function middleware(req: NextRequest) {
