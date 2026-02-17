@@ -1,57 +1,45 @@
-import { Card, Page, Text, BlockStack } from "@shopify/polaris";
+export const dynamic = "force-dynamic";
 
 export default function PrivacyPage() {
   return (
-    <Page title="Privacy Policy">
-      <Card>
-        <BlockStack gap="400">
-          <Text as="p">
-            MerchPulse provides operational insights for Shopify merchants by analyzing store data through the Shopify Admin API.
-          </Text>
+    <main style={{ maxWidth: 860, margin: "0 auto", padding: "32px 16px", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" }}>
+      <h1 style={{ fontSize: 28, marginBottom: 12 }}>Privacy Policy</h1>
 
-          <Text variant="headingMd" as="h2">
-            1. Data We Access
-          </Text>
-          <Text as="p">
-            When a merchant installs MerchPulse, the app may access order data, product and inventory data, customer data as permitted by approved Shopify scopes, and store metadata such as timezone. MerchPulse does not access or process payment details.
-          </Text>
+      <p style={{ color: "#444", lineHeight: 1.6 }}>
+        MerchPulse provides operational insights for Shopify merchants by analyzing store data through Shopify APIs.
+      </p>
 
-          <Text variant="headingMd" as="h2">
-            2. How We Use Data
-          </Text>
-          <Text as="p">
-            Store data is used solely to generate operational insights, detect inventory and revenue risks, and provide scheduled reports and email digests. Merchant data is not sold, rented, or shared with third parties for marketing purposes.
-          </Text>
+      <h2 style={{ fontSize: 18, marginTop: 24 }}>1. Data we access</h2>
+      <p style={{ color: "#444", lineHeight: 1.6 }}>
+        When installed, MerchPulse may access order data, product and inventory data, and store metadata (such as timezone) as permitted by the app’s approved Shopify access scopes.
+      </p>
 
-          <Text variant="headingMd" as="h2">
-            3. Data Storage
-          </Text>
-          <Text as="p">
-            Store data required for app functionality is stored securely. Access tokens are encrypted and used only for secure communication with Shopify APIs.
-          </Text>
+      <h2 style={{ fontSize: 18, marginTop: 24 }}>2. How we use data</h2>
+      <p style={{ color: "#444", lineHeight: 1.6 }}>
+        We use store data only to generate insights, detect operational risks, and produce scheduled scan summaries and email digests when enabled by the merchant.
+        We do not sell merchant data or share it with third parties for marketing.
+      </p>
 
-          <Text variant="headingMd" as="h2">
-            4. Data Retention
-          </Text>
-          <Text as="p">
-            Data is retained only while the app remains installed. Upon uninstall, associated store data is deleted in accordance with Shopify requirements.
-          </Text>
+      <h2 style={{ fontSize: 18, marginTop: 24 }}>3. Data storage</h2>
+      <p style={{ color: "#444", lineHeight: 1.6 }}>
+        MerchPulse stores only the data needed to operate the app, including configuration settings and scan results. Access tokens are stored securely and used only to communicate with Shopify APIs.
+      </p>
 
-          <Text variant="headingMd" as="h2">
-            5. Shopify Compliance Webhooks
-          </Text>
-          <Text as="p">
-            MerchPulse implements Shopify’s required compliance webhooks, including customers/data_request, customers/redact, shop/redact, and app/uninstalled. We process data deletion and redaction requests as required by Shopify’s privacy guidelines.
-          </Text>
+      <h2 style={{ fontSize: 18, marginTop: 24 }}>4. Data retention</h2>
+      <p style={{ color: "#444", lineHeight: 1.6 }}>
+        Data is retained only while the app remains installed. When the app is uninstalled, associated store data is deleted.
+      </p>
 
-          <Text variant="headingMd" as="h2">
-            6. Contact
-          </Text>
-          <Text as="p">
-            For privacy inquiries, contact support@merchpulse.app
-          </Text>
-        </BlockStack>
-      </Card>
-    </Page>
+      <h2 style={{ fontSize: 18, marginTop: 24 }}>5. Shopify privacy compliance</h2>
+      <p style={{ color: "#444", lineHeight: 1.6 }}>
+        MerchPulse supports Shopify’s required privacy and compliance webhooks, including customers/data_request, customers/redact, shop/redact, and app/uninstalled,
+        and responds to deletion/redaction requests as required.
+      </p>
+
+      <h2 style={{ fontSize: 18, marginTop: 24 }}>6. Contact</h2>
+      <p style={{ color: "#444", lineHeight: 1.6 }}>
+        For privacy inquiries: <a href="mailto:support@merchpulse.app">support@merchpulse.app</a>
+      </p>
+    </main>
   );
 }
