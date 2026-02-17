@@ -25,7 +25,7 @@ export default function HelpPage() {
 
       <h2 style={{ fontSize: 18, marginTop: 24 }}>Support</h2>
       <p style={{ color: "#444", lineHeight: 1.6 }}>
-        Email: <a href="mailto:support@merchpulse.app">support@merchpulse.app</a>
+        Email: <a href="mailto:support@ustaavenio.resend.app">support@ustaavenio.resend.app</a>
       </p>
     </main>
   );

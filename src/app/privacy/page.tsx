@@ -38,7 +38,7 @@ export default function PrivacyPage() {
 
       <h2 style={{ fontSize: 18, marginTop: 24 }}>6. Contact</h2>
       <p style={{ color: "#444", lineHeight: 1.6 }}>
-        For privacy inquiries: <a href="mailto:support@merchpulse.app">support@merchpulse.app</a>
+        For privacy inquiries: <a href="mailto:support@ustaavenio.resend.app">support@ustaavenio.resend.app</a>
       </p>
     </main>
   );
