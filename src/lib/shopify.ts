@@ -155,9 +155,6 @@ export async function resolveShop(req: Request): Promise<ShopRecord> {
 if (!record) {
   throw new HttpError(403, "Shop not installed");
 }
-if (record.billing_status !== "active") {
-  throw new HttpError(402, "Payment required");
-}
 return record;
 }
 

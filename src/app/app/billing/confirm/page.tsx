@@ -3,8 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Page, Spinner, Text, Banner, BlockStack } from "@shopify/polaris";
+import { useApiFetch } from "@/hooks/useApiFetch";
 
 export default function BillingConfirmPage() {
+   const apiFetch = useApiFetch();
   const router = useRouter();
   const params = useSearchParams();
 
@@ -20,7 +22,7 @@ export default function BillingConfirmPage() {
         return;
       }
 
-      const res = await fetch("/api/billing/confirm", {
+      const res = await apiFetch("/api/billing/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chargeId, plan }),
