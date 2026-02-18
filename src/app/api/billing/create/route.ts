@@ -21,14 +21,8 @@ mutation appSubscriptionCreate(
     lineItems: $lineItems
   ) {
     confirmationUrl
-    appSubscription {
-      id
-      status
-    }
-    userErrors {
-      field
-      message
-    }
+    appSubscription { id status }
+    userErrors { field message }
   }
 }
 `;
@@ -37,19 +31,21 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const plan: Plan = body?.plan === "yearly" ? "yearly" : "monthly";
+    const host: string = typeof body?.host === "string" ? body.host : "";
 
     const shop = await resolveShop(req);
 
     const APP_URL = (process.env.SHOPIFY_APP_URL || "").replace(/\/$/, "");
     if (!APP_URL) return NextResponse.json({ error: "Missing SHOPIFY_APP_URL" }, { status: 500 });
 
-    // Shopify will append `charge_id` to this URL after approval.
-    // Keep it inside /app so embedded context stays consistent.
-    const returnUrl = `${APP_URL}/app/billing/confirm?plan=${plan}`;
-
     const price = plan === "yearly" ? "99.00" : "9.00";
     const interval = plan === "yearly" ? "ANNUAL" : "EVERY_30_DAYS";
     const name = plan === "yearly" ? "MerchPulse Yearly" : "MerchPulse Monthly";
+
+    // Important: keep host + plan in returnUrl so confirm page can route back cleanly
+    const returnUrl =
+      `${APP_URL}/app/billing/confirm?plan=${encodeURIComponent(plan)}` +
+      (host ? `&host=${encodeURIComponent(host)}` : "");
 
     const data = await shopifyGraphql({
       shop: shop.shop_domain,
@@ -58,7 +54,7 @@ export async function POST(req: NextRequest) {
       variables: {
         name,
         returnUrl,
-        trialDays: 7, // optional; remove if you don't want trial
+        trialDays: 7,
         lineItems: [
           {
             plan: {
@@ -74,10 +70,12 @@ export async function POST(req: NextRequest) {
 
     const payload = data?.appSubscriptionCreate;
     const userErrors = payload?.userErrors || [];
-
     if (userErrors.length) {
       return NextResponse.json(
-        { error: "Billing create failed", details: userErrors.map((e: any) => e.message).join(" | ") },
+        {
+          error: "Billing create failed",
+          details: userErrors.map((e: any) => e.message).join(" | "),
+        },
         { status: 400 }
       );
     }

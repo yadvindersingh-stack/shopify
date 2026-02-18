@@ -1,59 +1,49 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Page, Spinner, Text, Banner, BlockStack } from "@shopify/polaris";
+import { Page, Spinner, Text, Banner } from "@shopify/polaris";
 import { useApiFetch } from "@/hooks/useApiFetch";
 
 export default function BillingConfirmPage() {
-   const apiFetch = useApiFetch();
   const router = useRouter();
   const params = useSearchParams();
-
-  const [error, setError] = useState<string | null>(null);
+  const apiFetch = useApiFetch();
 
   useEffect(() => {
+    const chargeId = params.get("charge_id");
+    const plan = (params.get("plan") === "yearly" ? "yearly" : "monthly") as "monthly" | "yearly";
+
+    // host is useful for returning to embedded app cleanly
+    const host = params.get("host") || "";
+
+    if (!chargeId) {
+      router.replace(host ? `/app?host=${encodeURIComponent(host)}` : "/app");
+      return;
+    }
+
     (async () => {
-      const chargeId = params.get("charge_id") || "";
-      const plan = params.get("plan") || "monthly";
-
-      if (!chargeId) {
-        router.replace("/app");
-        return;
+      try {
+        await apiFetch("/api/billing/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ chargeId, plan }),
+        });
+      } finally {
+        router.replace(host ? `/app?host=${encodeURIComponent(host)}` : "/app");
       }
-
-      const res = await apiFetch("/api/billing/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chargeId, plan }),
-      });
-
-      const json = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        setError(json?.error || "Failed to confirm subscription");
-        return;
-      }
-
-      router.replace("/app");
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <Page title="Confirming subscription">
-      <BlockStack gap="300">
-        {error ? (
-          <Banner tone="critical" title="Billing confirmation failed">
-            <p>{error}</p>
-          </Banner>
-        ) : (
-          <>
-            <Spinner />
-            <Text as="p">Confirming your plan in Shopify…</Text>
-          </>
-        )}
-      </BlockStack>
+    <Page>
+      <Spinner />
+      <Text as="p">Confirming subscription…</Text>
+      <Banner tone="info">
+        <p>If this takes more than a few seconds, reload the app from Shopify Admin.</p>
+      </Banner>
     </Page>
   );
 }
