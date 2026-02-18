@@ -1,52 +1,100 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveShop } from "@/lib/shopify";
+import { resolveShop, HttpError } from "@/lib/shopify";
 import { shopifyGraphql } from "@/lib/shopify-admin";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+type Plan = "monthly" | "yearly";
+
+const SUB_CREATE = `
+mutation appSubscriptionCreate(
+  $name: String!
+  $returnUrl: URL!
+  $trialDays: Int
+  $lineItems: [AppSubscriptionLineItemInput!]!
+) {
+  appSubscriptionCreate(
+    name: $name
+    returnUrl: $returnUrl
+    trialDays: $trialDays
+    lineItems: $lineItems
+  ) {
+    confirmationUrl
+    appSubscription {
+      id
+      status
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+`;
 
 export async function POST(req: NextRequest) {
-  const { plan } = await req.json(); // monthly | yearly
-  const shop = await resolveShop(req);
+  try {
+    const body = await req.json().catch(() => ({}));
+    const plan: Plan = body?.plan === "yearly" ? "yearly" : "monthly";
 
-  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing/confirm`;
+    const shop = await resolveShop(req);
 
-  const price = plan === "yearly" ? "99.00" : "9.00";
-  const interval = plan === "yearly" ? "ANNUAL" : "EVERY_30_DAYS";
+    const APP_URL = (process.env.SHOPIFY_APP_URL || "").replace(/\/$/, "");
+    if (!APP_URL) return NextResponse.json({ error: "Missing SHOPIFY_APP_URL" }, { status: 500 });
 
-  const mutation = `
-    mutation appSubscriptionCreate($name: String!, $returnUrl: URL!, $lineItems: [AppSubscriptionLineItemInput!]!) {
-      appSubscriptionCreate(
-        name: $name,
-        returnUrl: $returnUrl,
-        lineItems: $lineItems
-      ) {
-        confirmationUrl
-        userErrors { field message }
-      }
+    // Shopify will append `charge_id` to this URL after approval.
+    // Keep it inside /app so embedded context stays consistent.
+    const returnUrl = `${APP_URL}/app/billing/confirm?plan=${plan}`;
+
+    const price = plan === "yearly" ? "99.00" : "9.00";
+    const interval = plan === "yearly" ? "ANNUAL" : "EVERY_30_DAYS";
+    const name = plan === "yearly" ? "MerchPulse Yearly" : "MerchPulse Monthly";
+
+    const data = await shopifyGraphql({
+      shop: shop.shop_domain,
+      accessToken: shop.access_token,
+      query: SUB_CREATE,
+      variables: {
+        name,
+        returnUrl,
+        trialDays: 7, // optional; remove if you don't want trial
+        lineItems: [
+          {
+            plan: {
+              appRecurringPricingDetails: {
+                price: { amount: price, currencyCode: "CAD" },
+                interval,
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const payload = data?.appSubscriptionCreate;
+    const userErrors = payload?.userErrors || [];
+
+    if (userErrors.length) {
+      return NextResponse.json(
+        { error: "Billing create failed", details: userErrors.map((e: any) => e.message).join(" | ") },
+        { status: 400 }
+      );
     }
-  `;
 
-  const data = await shopifyGraphql({
-    shop: shop.shop_domain,
-    accessToken: shop.access_token,
-    query: mutation,
-    variables: {
-      name: `MerchPulse ${plan}`,
-      returnUrl,
-      lineItems: [
-        {
-          plan: {
-            appRecurringPricingDetails: {
-              price: { amount: price, currencyCode: "CAD" },
-              interval
-            }
-          }
-        }
-      ]
+    const confirmationUrl = payload?.confirmationUrl;
+    if (!confirmationUrl) {
+      return NextResponse.json({ error: "Missing confirmationUrl from Shopify" }, { status: 500 });
     }
-  });
 
-  return NextResponse.json({
-    confirmationUrl: data.appSubscriptionCreate.confirmationUrl
-  });
+    return NextResponse.json({ confirmationUrl });
+  } catch (e: any) {
+    if (e instanceof HttpError) {
+      return NextResponse.json({ error: e.message }, { status: e.status });
+    }
+    return NextResponse.json(
+      { error: "Billing create failed", details: e?.message || String(e) },
+      { status: 500 }
+    );
+  }
 }
