@@ -62,16 +62,10 @@ export default function InsightsPage() {
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
   }, [insights]);
 
-  const goChoosePlan = useCallback(() => {
-    // Use top-level redirect so it works inside embedded iframe.
-    // This route will 302 to Shopify Admin hosted plan picker.
-    if (!shopParam) {
-      // If shop is missing, still try; Shopify review should open from Admin with shop param.
-      window.top!.location.href = `/api/billing/redirect?shop=missing.myshopify.com`;
-      return;
-    }
-    window.top!.location.href = `/api/billing/redirect?shop=${encodeURIComponent(shopParam)}`;
-  }, [shopParam]);
+const goChoosePlan = useCallback(() => {
+  window.top!.location.href = `/api/billing/redirect`;
+}, []);
+
 
   const fetchBillingStatus = useCallback(async () => {
     setBillingLoading(true);
