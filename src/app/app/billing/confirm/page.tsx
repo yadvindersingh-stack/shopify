@@ -1,49 +1,89 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Page, Spinner, Text, Banner } from "@shopify/polaris";
+import { Page, Card, BlockStack, Text, Spinner, Banner } from "@shopify/polaris";
 import { useApiFetch } from "@/hooks/useApiFetch";
+import { buildPathWithHost } from "@/lib/host";
 
 export default function BillingConfirmPage() {
   const router = useRouter();
-  const params = useSearchParams();
+  const sp = useSearchParams();
   const apiFetch = useApiFetch();
 
+  const host = sp.get("host") || "";
+  const chargeId = sp.get("charge_id") || "";
+  const plan = (sp.get("plan") || "") as "monthly" | "yearly" | "";
+
+  const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
+  const [err, setErr] = useState<string | null>(null);
+
+  const backToInsights = useMemo(() => buildPathWithHost("/app/insights", host), [host]);
+
   useEffect(() => {
-    const chargeId = params.get("charge_id");
-    const plan = (params.get("plan") === "yearly" ? "yearly" : "monthly") as "monthly" | "yearly";
+    let cancelled = false;
 
-    // host is useful for returning to embedded app cleanly
-    const host = params.get("host") || "";
-
-    if (!chargeId) {
-      router.replace(host ? `/app?host=${encodeURIComponent(host)}` : "/app");
-      return;
-    }
-
-    (async () => {
+    async function run() {
       try {
-        await apiFetch("/api/billing/confirm", {
+        if (!host) throw new Error("Missing host.");
+        if (!chargeId) throw new Error("Missing charge_id from Shopify.");
+
+        const res = await apiFetch("/api/billing/confirm", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          cache: "no-store",
           body: JSON.stringify({ chargeId, plan }),
         });
-      } finally {
-        router.replace(host ? `/app?host=${encodeURIComponent(host)}` : "/app");
+
+        const text = await res.text();
+        let json: any = null;
+        try {
+          json = text ? JSON.parse(text) : null;
+        } catch {}
+
+        if (!res.ok) {
+          const msg = json?.error || `Billing confirm failed (${res.status})`;
+          const details = json?.details ? ` — ${json.details}` : "";
+          throw new Error(msg + details);
+        }
+
+        if (cancelled) return;
+        setStatus("ok");
+
+        // ✅ back to app
+        router.replace(backToInsights);
+      } catch (e: any) {
+        if (cancelled) return;
+        setStatus("error");
+        setErr(e?.message || String(e));
       }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiFetch, backToInsights, chargeId, host, plan, router]);
 
   return (
-    <Page>
-      <Spinner />
-      <Text as="p">Confirming subscription…</Text>
-      <Banner tone="info">
-        <p>If this takes more than a few seconds, reload the app from Shopify Admin.</p>
-      </Banner>
+    <Page title="Confirming billing">
+      <Card>
+        <BlockStack gap="300">
+          {status === "loading" && (
+            <>
+              <Spinner accessibilityLabel="Confirming billing" size="small" />
+              <Text as="p" tone="subdued">
+                Finalizing your subscription…
+              </Text>
+            </>
+          )}
+
+          {status === "error" && (
+            <Banner tone="critical" title="Billing confirmation failed">
+              <p>{err}</p>
+            </Banner>
+          )}
+        </BlockStack>
+      </Card>
     </Page>
   );
 }

@@ -1,30 +1,59 @@
 "use client";
 
-import { Page, Card, Button, BlockStack, Text, InlineStack, Banner } from "@shopify/polaris";
-import { useState, useMemo } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  Page,
+  Layout,
+  Card,
+  BlockStack,
+  Text,
+  Button,
+  Banner,
+  InlineStack,
+} from "@shopify/polaris";
+import { Redirect } from "@shopify/app-bridge/actions";
+import { useAppBridge } from "@/lib/app-bridge-context";
 import { useApiFetch } from "@/hooks/useApiFetch";
+import { buildPathWithHost } from "@/lib/host";
+
+type Plan = "monthly" | "yearly";
 
 export default function BillingPage() {
-  const apiFetch = useApiFetch();
+  const router = useRouter();
   const sp = useSearchParams();
+  const host = sp.get("host") || "";
+  const app = useAppBridge();
+  const apiFetch = useApiFetch();
 
-  const [loading, setLoading] = useState<null | "monthly" | "yearly">(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadingPlan, setLoadingPlan] = useState<Plan | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  const host = useMemo(() => sp.get("host") || "", [sp]);
+  const withHost = useCallback(
+    (path: string) => buildPathWithHost(path, host),
+    [host]
+  );
 
-  async function subscribe(plan: "monthly" | "yearly") {
-    setLoading(plan);
-    setError(null);
+  const planCopy = useMemo(
+    () => ({
+      monthly: { title: "Monthly", price: "$9 CAD / month" },
+      yearly: { title: "Yearly", price: "$99 CAD / year" },
+    }),
+    []
+  );
+
+  const start = async (plan: Plan) => {
+    setErr(null);
+    setLoadingPlan(plan);
 
     try {
-      const res = await apiFetch("/api/billing/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({ plan, host }),
-      });
+      if (!host) throw new Error("Missing host in URL.");
+      if (!app) throw new Error("App Bridge not initialized.");
+
+      const res = await apiFetch(
+        `/api/billing/create?plan=${encodeURIComponent(plan)}&host=${encodeURIComponent(host)}`,
+        { method: "POST" }
+      );
 
       const text = await res.text();
       let json: any = null;
@@ -33,69 +62,89 @@ export default function BillingPage() {
       } catch {}
 
       if (!res.ok) {
-        setError(json?.error || json?.details || `Billing create failed (${res.status})`);
-        return;
+        const msg = json?.error || `Billing create failed (${res.status})`;
+        const details = json?.details ? ` — ${json.details}` : "";
+        throw new Error(msg + details);
       }
 
       const confirmationUrl = json?.confirmationUrl;
-      if (!confirmationUrl) {
-        setError("Missing confirmationUrl from server");
-        return;
-      }
+      if (!confirmationUrl) throw new Error("Missing confirmationUrl from server.");
 
-      // IMPORTANT: must escape the iframe and redirect top-level
-      // (Shopify blocks iframe navigation to admin/charges pages)
-      window.top!.location.href = confirmationUrl;
-    } finally {
-      setLoading(null);
+      // ✅ IMPORTANT: break out of iframe
+      const redirect = Redirect.create(app);
+      redirect.dispatch(Redirect.Action.REMOTE, confirmationUrl);
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+      setLoadingPlan(null);
     }
-  }
+  };
 
   return (
-    <Page title="Choose a plan" subtitle="Start with a 7-day trial. Cancel anytime in Shopify.">
-      <BlockStack gap="300">
-        {error && (
-          <Banner tone="critical" title="Couldn’t start billing">
-            <p>{error}</p>
-          </Banner>
-        )}
-
-        <Card>
+    <Page
+      title="Choose a plan"
+      subtitle="Start a plan to continue using MerchPulse."
+      backAction={{ content: "Back to insights", onAction: () => router.push(withHost("/app/insights")) }}
+    >
+      <Layout>
+        <Layout.Section>
           <BlockStack gap="400">
-            <InlineStack align="space-between" blockAlign="center">
-              <BlockStack gap="100">
-                <Text as="h3" variant="headingMd">
-                  Monthly
-                </Text>
-                <Text as="p" tone="subdued">
-                  $9 CAD / month
-                </Text>
-              </BlockStack>
-              <Button
-                variant="primary"
-                loading={loading === "monthly"}
-                onClick={() => subscribe("monthly")}
-              >
-                Start monthly
-              </Button>
-            </InlineStack>
+            {err && (
+              <Banner tone="critical" title="Billing error">
+                <p>{err}</p>
+              </Banner>
+            )}
 
-            <InlineStack align="space-between" blockAlign="center">
-              <BlockStack gap="100">
-                <Text as="h3" variant="headingMd">
-                  Yearly
-                </Text>
+            <Card>
+              <BlockStack gap="300">
                 <Text as="p" tone="subdued">
-                  $99 CAD / year
+                  MerchPulse runs scheduled scans and emails store health insights. Select a plan to activate billing.
                 </Text>
               </BlockStack>
-              <Button loading={loading === "yearly"} onClick={() => subscribe("yearly")}>
-                Start yearly
-              </Button>
-            </InlineStack>
+            </Card>
+
+            <Layout>
+              <Layout.Section variant="oneHalf">
+                <Card>
+                  <BlockStack gap="200">
+                    <Text variant="headingMd" as="h2">
+                      {planCopy.monthly.title}
+                    </Text>
+                    <Text as="p">{planCopy.monthly.price}</Text>
+                    <InlineStack gap="200">
+                      <Button
+                        variant="primary"
+                        loading={loadingPlan === "monthly"}
+                        onClick={() => start("monthly")}
+                      >
+                        Start monthly
+                      </Button>
+                    </InlineStack>
+                  </BlockStack>
+                </Card>
+              </Layout.Section>
+
+              <Layout.Section variant="oneHalf">
+                <Card>
+                  <BlockStack gap="200">
+                    <Text variant="headingMd" as="h2">
+                      {planCopy.yearly.title}
+                    </Text>
+                    <Text as="p">{planCopy.yearly.price}</Text>
+                    <InlineStack gap="200">
+                      <Button
+                        loading={loadingPlan === "yearly"}
+                        onClick={() => start("yearly")}
+                      >
+                        Start yearly
+                      </Button>
+                    </InlineStack>
+                  </BlockStack>
+                </Card>
+              </Layout.Section>
+            </Layout>
           </BlockStack>
-        </Card>
-      </BlockStack>
+        </Layout.Section>
+      </Layout>
     </Page>
   );
 }
