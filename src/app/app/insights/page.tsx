@@ -236,18 +236,6 @@ const goChoosePlan = useCallback(() => {
                 ))}
               </BlockStack>
             )}
-
-            {/* Manual CTA for reviewers if shop param is missing */}
-            {!shopParam && (
-              <Card>
-                <BlockStack gap="200">
-                  <Text as="p" tone="subdued">
-                    Note: shop parameter missing. Open the app from Shopify Admin so billing + sessions work correctly.
-                  </Text>
-                  <Button onClick={() => router.replace(withHost("/app/error"))}>Open error page</Button>
-                </BlockStack>
-              </Card>
-            )}
           </BlockStack>
         </Layout.Section>
       </Layout>
