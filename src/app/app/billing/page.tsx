@@ -1,59 +1,29 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import {
-  Page,
-  Layout,
-  Card,
-  BlockStack,
-  Text,
-  Button,
-  Banner,
-  InlineStack,
-} from "@shopify/polaris";
+import { Page, Card, Button, BlockStack, Text, InlineStack, Banner } from "@shopify/polaris";
+import { useState } from "react";
+import { useApiFetch } from "@/hooks/useApiFetch";
 import { Redirect } from "@shopify/app-bridge/actions";
 import { useAppBridge } from "@/lib/app-bridge-context";
-import { useApiFetch } from "@/hooks/useApiFetch";
-import { buildPathWithHost } from "@/lib/host";
-
-type Plan = "monthly" | "yearly";
 
 export default function BillingPage() {
-  const router = useRouter();
-  const sp = useSearchParams();
-  const host = sp.get("host") || "";
-  const app = useAppBridge();
   const apiFetch = useApiFetch();
+  const app = useAppBridge();
 
-  const [loadingPlan, setLoadingPlan] = useState<Plan | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState<null | "monthly" | "yearly">(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const withHost = useCallback(
-    (path: string) => buildPathWithHost(path, host),
-    [host]
-  );
-
-  const planCopy = useMemo(
-    () => ({
-      monthly: { title: "Monthly", price: "$9 CAD / month" },
-      yearly: { title: "Yearly", price: "$99 CAD / year" },
-    }),
-    []
-  );
-
-  const start = async (plan: Plan) => {
-    setErr(null);
-    setLoadingPlan(plan);
+  async function subscribe(plan: "monthly" | "yearly") {
+    setLoading(plan);
+    setError(null);
 
     try {
-      if (!host) throw new Error("Missing host in URL.");
-      if (!app) throw new Error("App Bridge not initialized.");
-
-      const res = await apiFetch(
-        `/api/billing/create?plan=${encodeURIComponent(plan)}&host=${encodeURIComponent(host)}`,
-        { method: "POST" }
-      );
+      const res = await apiFetch("/api/billing/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan }),
+        cache: "no-store",
+      });
 
       const text = await res.text();
       let json: any = null;
@@ -62,89 +32,75 @@ export default function BillingPage() {
       } catch {}
 
       if (!res.ok) {
-        const msg = json?.error || `Billing create failed (${res.status})`;
-        const details = json?.details ? ` — ${json.details}` : "";
-        throw new Error(msg + details);
+        setError(json?.error || json?.details || `Billing create failed (${res.status})`);
+        return;
       }
 
       const confirmationUrl = json?.confirmationUrl;
-      if (!confirmationUrl) throw new Error("Missing confirmationUrl from server.");
+      if (!confirmationUrl) {
+        setError("Missing confirmationUrl from server");
+        return;
+      }
 
-      // ✅ IMPORTANT: break out of iframe
+      // ✅ Embedded apps must use App Bridge remote redirect for billing confirmation.
+      if (!app) {
+        // Fallback: should be rare, but don't brick the user.
+        window.top?.location.assign(confirmationUrl);
+        return;
+      }
+
       const redirect = Redirect.create(app);
       redirect.dispatch(Redirect.Action.REMOTE, confirmationUrl);
-    } catch (e: any) {
-      setErr(e?.message || String(e));
-      setLoadingPlan(null);
+    } finally {
+      setLoading(null);
     }
-  };
+  }
 
   return (
-    <Page
-      title="Choose a plan"
-      subtitle="Start a plan to continue using MerchPulse."
-      backAction={{ content: "Back to insights", onAction: () => router.push(withHost("/app/insights")) }}
-    >
-      <Layout>
-        <Layout.Section>
-          <BlockStack gap="400">
-            {err && (
-              <Banner tone="critical" title="Billing error">
-                <p>{err}</p>
-              </Banner>
-            )}
+    <Page title="Choose a plan" subtitle="Start with a 7-day trial. Cancel anytime in Shopify.">
+      <BlockStack gap="300">
+        {error && (
+          <Banner tone="critical" title="Couldn’t start billing">
+            <p>{error}</p>
+          </Banner>
+        )}
 
-            <Card>
-              <BlockStack gap="300">
+        <Card>
+          <BlockStack gap="400">
+            <InlineStack align="space-between" blockAlign="center">
+              <BlockStack gap="100">
+                <Text as="h3" variant="headingMd">
+                  Monthly
+                </Text>
                 <Text as="p" tone="subdued">
-                  MerchPulse runs scheduled scans and emails store health insights. Select a plan to activate billing.
+                  $9 CAD / month
                 </Text>
               </BlockStack>
-            </Card>
+              <Button
+                loading={loading === "monthly"}
+                onClick={() => subscribe("monthly")}
+                variant="primary"
+              >
+                Start monthly
+              </Button>
+            </InlineStack>
 
-            <Layout>
-              <Layout.Section variant="oneHalf">
-                <Card>
-                  <BlockStack gap="200">
-                    <Text variant="headingMd" as="h2">
-                      {planCopy.monthly.title}
-                    </Text>
-                    <Text as="p">{planCopy.monthly.price}</Text>
-                    <InlineStack gap="200">
-                      <Button
-                        variant="primary"
-                        loading={loadingPlan === "monthly"}
-                        onClick={() => start("monthly")}
-                      >
-                        Start monthly
-                      </Button>
-                    </InlineStack>
-                  </BlockStack>
-                </Card>
-              </Layout.Section>
-
-              <Layout.Section variant="oneHalf">
-                <Card>
-                  <BlockStack gap="200">
-                    <Text variant="headingMd" as="h2">
-                      {planCopy.yearly.title}
-                    </Text>
-                    <Text as="p">{planCopy.yearly.price}</Text>
-                    <InlineStack gap="200">
-                      <Button
-                        loading={loadingPlan === "yearly"}
-                        onClick={() => start("yearly")}
-                      >
-                        Start yearly
-                      </Button>
-                    </InlineStack>
-                  </BlockStack>
-                </Card>
-              </Layout.Section>
-            </Layout>
+            <InlineStack align="space-between" blockAlign="center">
+              <BlockStack gap="100">
+                <Text as="h3" variant="headingMd">
+                  Yearly
+                </Text>
+                <Text as="p" tone="subdued">
+                  $99 CAD / year
+                </Text>
+              </BlockStack>
+              <Button loading={loading === "yearly"} onClick={() => subscribe("yearly")}>
+                Start yearly
+              </Button>
+            </InlineStack>
           </BlockStack>
-        </Layout.Section>
-      </Layout>
+        </Card>
+      </BlockStack>
     </Page>
   );
 }
