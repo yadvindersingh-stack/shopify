@@ -5,23 +5,27 @@ import { shopifyGraphql } from "@/lib/shopify-admin";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type Plan = "monthly" | "yearly";
+const APP_URL = process.env.SHOPIFY_APP_URL!;
 
-const SUB_CREATE = `
-mutation appSubscriptionCreate(
-  $name: String!
-  $returnUrl: URL!
-  $trialDays: Int
-  $lineItems: [AppSubscriptionLineItemInput!]!
-) {
+function planConfig(plan: string) {
+  if (plan === "monthly") {
+    return { name: "MerchPulse Monthly", interval: "EVERY_30_DAYS", amount: 9.0 };
+  }
+  if (plan === "yearly") {
+    return { name: "MerchPulse Yearly", interval: "ANNUAL", amount: 99.0 };
+  }
+  throw new Error("Invalid plan");
+}
+
+const MUTATION = `
+mutation CreateSubscription($name: String!, $returnUrl: URL!, $lineItems: [AppSubscriptionLineItemInput!]!, $test: Boolean!) {
   appSubscriptionCreate(
     name: $name
     returnUrl: $returnUrl
-    trialDays: $trialDays
     lineItems: $lineItems
+    test: $test
   ) {
     confirmationUrl
-    appSubscription { id status }
     userErrors { field message }
   }
 }
@@ -29,42 +33,42 @@ mutation appSubscriptionCreate(
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const plan: Plan = body?.plan === "yearly" ? "yearly" : "monthly";
-    const host: string = typeof body?.host === "string" ? body.host : "";
-
     const shop = await resolveShop(req);
 
-    const APP_URL = (process.env.SHOPIFY_APP_URL || "").replace(/\/$/, "");
-    if (!APP_URL) return NextResponse.json({ error: "Missing SHOPIFY_APP_URL" }, { status: 500 });
+    const url = new URL(req.url);
+    const plan = url.searchParams.get("plan") || "monthly";
+    const host = url.searchParams.get("host") || "";
 
-    const price = plan === "yearly" ? "99.00" : "9.00";
-    const interval = plan === "yearly" ? "ANNUAL" : "EVERY_30_DAYS";
-    const name = plan === "yearly" ? "MerchPulse Yearly" : "MerchPulse Monthly";
+    const cfg = planConfig(plan);
 
-    // Important: keep host + plan in returnUrl so confirm page can route back cleanly
-    const returnUrl =
-      `${APP_URL}/app/billing/confirm?plan=${encodeURIComponent(plan)}` +
-      (host ? `&host=${encodeURIComponent(host)}` : "");
+    // Return URL must be inside your app and include host so App Bridge can load it.
+    const returnUrl = `${APP_URL}/app/billing/confirm?plan=${encodeURIComponent(
+      plan
+    )}&host=${encodeURIComponent(host)}`;
+
+    // In dev stores / review you often want test=true. For production paid installs set false.
+    const test = process.env.SHOPIFY_BILLING_TEST_MODE === "true";
+
+    const lineItems = [
+      {
+        plan: {
+          appRecurringPricingDetails: {
+            price: { amount: cfg.amount, currencyCode: "CAD" },
+            interval: cfg.interval,
+          },
+        },
+      },
+    ];
 
     const data = await shopifyGraphql({
       shop: shop.shop_domain,
       accessToken: shop.access_token,
-      query: SUB_CREATE,
+      query: MUTATION,
       variables: {
-        name,
+        name: cfg.name,
         returnUrl,
-        trialDays: 7,
-        lineItems: [
-          {
-            plan: {
-              appRecurringPricingDetails: {
-                price: { amount: price, currencyCode: "CAD" },
-                interval,
-              },
-            },
-          },
-        ],
+        lineItems,
+        test,
       },
     });
 
@@ -72,20 +76,20 @@ export async function POST(req: NextRequest) {
     const userErrors = payload?.userErrors || [];
     if (userErrors.length) {
       return NextResponse.json(
-        {
-          error: "Billing create failed",
-          details: userErrors.map((e: any) => e.message).join(" | "),
-        },
+        { error: "Billing create failed", details: userErrors.map((e: any) => e.message).join("; ") },
         { status: 400 }
       );
     }
 
     const confirmationUrl = payload?.confirmationUrl;
     if (!confirmationUrl) {
-      return NextResponse.json({ error: "Missing confirmationUrl from Shopify" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Billing create failed", details: "Missing confirmationUrl" },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json({ confirmationUrl });
+    return NextResponse.json({ ok: true, confirmationUrl });
   } catch (e: any) {
     if (e instanceof HttpError) {
       return NextResponse.json({ error: e.message }, { status: e.status });
