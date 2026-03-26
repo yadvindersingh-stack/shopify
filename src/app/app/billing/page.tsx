@@ -5,10 +5,14 @@ import { useState } from "react";
 import { useApiFetch } from "@/hooks/useApiFetch";
 import { Redirect } from "@shopify/app-bridge/actions";
 import { useAppBridge } from "@/lib/app-bridge-context";
+import { useSearchParams } from "next/navigation";
+import { getHostFromLocation } from "@/lib/host";
 
 export default function BillingPage() {
   const apiFetch = useApiFetch();
   const app = useAppBridge();
+  const searchParams = useSearchParams();
+  const host = searchParams.get("host") || getHostFromLocation();
 
   const [loading, setLoading] = useState<null | "monthly" | "yearly">(null);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +25,7 @@ export default function BillingPage() {
       const res = await apiFetch("/api/billing/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan }),
+        body: JSON.stringify({ plan, host }),
         cache: "no-store",
       });
 

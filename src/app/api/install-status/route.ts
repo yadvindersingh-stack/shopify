@@ -9,7 +9,10 @@ export async function GET(req: NextRequest) {
   const shop = getShopFromRequestAuthHeader(req.headers.get("authorization"))?.toLowerCase();
 
   if (!shop) {
-    return NextResponse.json({ ok: false, installed: false, shop: null }, { status: 401 });
+    return NextResponse.json(
+      { ok: false, installed: false, shop: null, code: "auth_required" },
+      { status: 401 }
+    );
   }
 
   const { data, error } = await supabase
@@ -20,10 +23,15 @@ export async function GET(req: NextRequest) {
 
   if (error) {
     return NextResponse.json(
-      { ok: false, installed: false, shop, error: error.message },
+      { ok: false, installed: false, shop, code: "install_status_failed", error: error.message },
       { status: 500 }
     );
   }
 
-  return NextResponse.json({ ok: true, installed: Boolean(data), shop });
+  return NextResponse.json({
+    ok: true,
+    installed: Boolean(data),
+    shop,
+    code: data ? "installed" : "shop_not_installed",
+  });
 }

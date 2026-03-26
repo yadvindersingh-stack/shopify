@@ -1,6 +1,10 @@
+import { getSupportEmail } from "@/lib/support";
+
 export const dynamic = "force-dynamic";
 
 export default function HelpPage() {
+  const supportEmail = getSupportEmail();
+
   return (
     <main style={{ maxWidth: 860, margin: "0 auto", padding: "32px 16px", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" }}>
       <h1 style={{ fontSize: 28, marginBottom: 12 }}>Help & Support</h1>
@@ -25,7 +29,7 @@ export default function HelpPage() {
 
       <h2 style={{ fontSize: 18, marginTop: 24 }}>Support</h2>
       <p style={{ color: "#444", lineHeight: 1.6 }}>
-        Email: <a href="mailto:support@ustaavenio.resend.app">support@ustaavenio.resend.app</a>
+        Email: <a href={`mailto:${supportEmail}`}>{supportEmail}</a>
       </p>
     </main>
   );

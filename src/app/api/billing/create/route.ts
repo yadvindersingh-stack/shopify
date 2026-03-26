@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const plan: Plan = body?.plan === "yearly" ? "yearly" : "monthly";
+    const host = typeof body?.host === "string" ? body.host : "";
 
     const shop = await resolveShop(req);
 
@@ -40,7 +41,9 @@ export async function POST(req: NextRequest) {
     if (!APP_URL) return NextResponse.json({ error: "Missing SHOPIFY_APP_URL" }, { status: 500 });
 
     // Shopify appends charge_id to returnUrl after approval
-    const returnUrl = `${APP_URL}/app/billing/confirm?plan=${plan}`;
+    const params = new URLSearchParams({ plan });
+    if (host) params.set("host", host);
+    const returnUrl = `${APP_URL}/app/billing/confirm?${params.toString()}`;
 
     const price = plan === "yearly" ? "99.00" : "9.00";
     const interval = plan === "yearly" ? "ANNUAL" : "EVERY_30_DAYS";

@@ -1,6 +1,10 @@
+import { getSupportEmail } from "@/lib/support";
+
 export const dynamic = "force-dynamic";
 
 export default function PrivacyPage() {
+  const supportEmail = getSupportEmail();
+
   return (
     <main style={{ maxWidth: 860, margin: "0 auto", padding: "32px 16px", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" }}>
       <h1 style={{ fontSize: 28, marginBottom: 12 }}>Privacy Policy</h1>
@@ -38,7 +42,7 @@ export default function PrivacyPage() {
 
       <h2 style={{ fontSize: 18, marginTop: 24 }}>6. Contact</h2>
       <p style={{ color: "#444", lineHeight: 1.6 }}>
-        For privacy inquiries: <a href="mailto:support@ustaavenio.resend.app">support@ustaavenio.resend.app</a>
+        For privacy inquiries: <a href={`mailto:${supportEmail}`}>{supportEmail}</a>
       </p>
     </main>
   );

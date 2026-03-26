@@ -5,15 +5,20 @@ import { resolveShop, HttpError } from "@/lib/shopify";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function errorResponse(error: unknown, fallbackMessage: string) {
+  if (error instanceof HttpError) {
+    const code = error.status === 401 ? "auth_required" : error.status === 403 ? "shop_not_installed" : "request_failed";
+    return NextResponse.json({ error: error.message, code }, { status: error.status });
+  }
+
+  return NextResponse.json(
+    { error: fallbackMessage, code: "setup_failed", details: error instanceof Error ? error.message : String(error) },
+    { status: 500 }
+  );
+}
+
 export async function POST(req: NextRequest) {
   try {
-    console.log("SETUP_401_DEBUG", {
-  url: req.url,
-  authPresent: Boolean(req.headers.get("authorization")),
-  authPrefix: req.headers.get("authorization")?.slice(0, 20) || null,
-  cookiePresent: Boolean(req.headers.get("cookie")),
-});
-
     const shop = await resolveShop(req);
 
     const body = await req.json().catch(() => ({}));
@@ -30,26 +35,13 @@ export async function POST(req: NextRequest) {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ success: true });
-  } catch (e: any) {
-    if (e instanceof HttpError) {
-      return NextResponse.json({ error: e.message }, { status: e.status });
-    }
-    return NextResponse.json(
-      { error: "Setup failed", details: e?.message || String(e) },
-      { status: 500 }
-    );
+  } catch (error) {
+    return errorResponse(error, "Setup failed");
   }
 }
 
 export async function GET(req: NextRequest) {
   try {
-    console.log("SETUP_401_DEBUG", {
-  url: req.url,
-  authPresent: Boolean(req.headers.get("authorization")),
-  authPrefix: req.headers.get("authorization")?.slice(0, 20) || null,
-  cookiePresent: Boolean(req.headers.get("cookie")),
-});
-
     const shop = await resolveShop(req);
 
     const { data, error } = await supabase
@@ -60,13 +52,7 @@ export async function GET(req: NextRequest) {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json(data || {});
-  } catch (e: any) {
-    if (e instanceof HttpError) {
-      return NextResponse.json({ error: e.message }, { status: e.status });
-    }
-    return NextResponse.json(
-      { error: "Setup fetch failed", details: e?.message || String(e) },
-      { status: 500 }
-    );
+  } catch (error) {
+    return errorResponse(error, "Setup fetch failed");
   }
 }

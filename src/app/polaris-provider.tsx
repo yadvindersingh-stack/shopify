@@ -1,44 +1,58 @@
 "use client";
 
 import React, { ReactNode, useEffect, useMemo, useState } from "react";
-import { AppProvider, Banner, Frame, Navigation, Page } from "@shopify/polaris";
+import { AppProvider, Banner, BlockStack, Button, Frame, Navigation, Page, Text } from "@shopify/polaris";
 import en from "@shopify/polaris/locales/en.json";
 import { usePathname, useSearchParams } from "next/navigation";
-import { buildPathWithHost } from "@/lib/host";
+import {
+  buildPathWithHost,
+  clearPersistedHost,
+  isSafeShopifyHost,
+  readPersistedHost,
+  readPersistedShop,
+} from "@/lib/host";
 import { AppBridgeProvider } from "@/lib/app-bridge-context";
 
 export default function PolarisProvider({ children }: { children: ReactNode }) {
   const searchParams = useSearchParams();
   const hostFromQuery = useMemo(() => searchParams.get("host") || "", [searchParams]);
+  const shopFromQuery = useMemo(() => (searchParams.get("shop") || "").toLowerCase(), [searchParams]);
 
   const [persistedHost, setPersistedHost] = useState<string>(() => {
     if (typeof window === "undefined") return hostFromQuery || "";
-    return hostFromQuery || window.localStorage.getItem("shopifyHost") || "";
+    return hostFromQuery || readPersistedHost();
   });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (hostFromQuery) {
+
+    if (isSafeShopifyHost(hostFromQuery)) {
       window.localStorage.setItem("shopifyHost", hostFromQuery);
       setPersistedHost(hostFromQuery);
       return;
     }
-    const stored = window.localStorage.getItem("shopifyHost") || "";
-const looksSafe = /^[A-Za-z0-9+/=_-]+$/.test(stored) && stored.length > 10;
 
-if (looksSafe && stored && !hostFromQuery) {
-  setPersistedHost(stored);
-  const url = new URL(window.location.href);
-  url.searchParams.set("host", stored);
-  window.location.replace(url.toString());
-} else if (!looksSafe) {
-  window.localStorage.removeItem("shopifyHost");
-}
+    const stored = readPersistedHost();
+    if (stored && !hostFromQuery) {
+      setPersistedHost(stored);
+      const url = new URL(window.location.href);
+      url.searchParams.set("host", stored);
+      window.location.replace(url.toString());
+      return;
+    }
+
+    if (!stored) {
+      clearPersistedHost();
+    }
   }, [hostFromQuery]);
 
   const host = hostFromQuery || persistedHost;
   const pathname = usePathname();
   const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
+  const reconnectShop = shopFromQuery || readPersistedShop();
+  const reconnectUrl = reconnectShop
+    ? buildPathWithHost(`/api/auth/start?shop=${encodeURIComponent(reconnectShop)}`, host || undefined)
+    : "";
 
   const missingContext = !host || !apiKey;
 
@@ -46,12 +60,39 @@ if (looksSafe && stored && !hostFromQuery) {
     return (
       <AppProvider i18n={en}>
         <Frame>
-          <Page title="App not initialized">
-            <Banner tone="critical" title="Embedded context missing">
-              <p>Open the app from Shopify Admin so Shopify includes the host query parameter.</p>
-              {!apiKey && <p>Missing NEXT_PUBLIC_SHOPIFY_API_KEY in the environment.</p>}
-              {!host && <p>Missing host parameter in the URL.</p>}
-            </Banner>
+          <Page title="Reconnecting to Shopify">
+            <BlockStack gap="400">
+              <Banner tone={apiKey ? "warning" : "critical"} title={apiKey ? "Refreshing app context" : "App configuration needed"}>
+                <p>
+                  {apiKey
+                    ? "We’re restoring your Shopify session so the embedded app can continue."
+                    : "NEXT_PUBLIC_SHOPIFY_API_KEY is missing in the environment."}
+                </p>
+              </Banner>
+
+              <BlockStack gap="200">
+                {!host && (
+                  <Text as="p" tone="subdued">
+                    Missing the embedded host parameter. This can happen after review-session redirects or expired Shopify context.
+                  </Text>
+                )}
+                {reconnectShop ? (
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      window.top?.location.assign(reconnectUrl);
+                    }}
+                  >
+                    Reconnect Shopify
+                  </Button>
+                ) : (
+                  <Text as="p" tone="subdued">
+                    Re-open the app from Shopify Admin so Shopify can restore the embedded session.
+                  </Text>
+                )}
+                <Button onClick={() => window.location.reload()}>Retry loading</Button>
+              </BlockStack>
+            </BlockStack>
           </Page>
         </Frame>
       </AppProvider>

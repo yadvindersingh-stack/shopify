@@ -15,7 +15,7 @@ import {
 } from "@shopify/polaris";
 import { buildPathWithHost } from "@/lib/host";
 import { useApiFetch } from "@/hooks/useApiFetch";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const timezones = [
   { label: "Store timezone (default)", value: "store" },
@@ -25,6 +25,7 @@ const timezones = [
 ];
 
 export default function SettingsPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [daily, setDaily] = useState(true);
   const [weekly, setWeekly] = useState(true);
@@ -39,6 +40,10 @@ export default function SettingsPage() {
     (async () => {
       try {
         const res = await apiFetch("/api/setup", { method: "GET" });
+        if (res.status === 401 || res.status === 403) {
+          router.replace(buildPathWithHost("/app/error", hostParam || undefined));
+          return;
+        }
         if (!res.ok) return;
         const data = await res.json();
         if (data?.email) setEmail(data.email);
@@ -48,7 +53,7 @@ export default function SettingsPage() {
         console.error(err);
       }
     })();
-  }, []);
+  }, [apiFetch, hostParam, router]);
 
   const handleSave = async () => {
     setLoading(true);
@@ -58,6 +63,10 @@ export default function SettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, daily_enabled: daily, weekly_enabled: weekly }),
       });
+      if (res.status === 401 || res.status === 403) {
+        router.replace(buildPathWithHost("/app/error", hostParam || undefined));
+        return;
+      }
       if (!res.ok) throw new Error("Failed to save settings");
       setToast({ content: "Settings saved" });
     } catch (err) {
@@ -72,6 +81,10 @@ export default function SettingsPage() {
     setLoading(true);
     try {
       const res = await apiFetch("/api/email/test", { method: "POST" });
+      if (res.status === 401 || res.status === 403) {
+        router.replace(buildPathWithHost("/app/error", hostParam || undefined));
+        return;
+      }
       if (!res.ok) throw new Error("Failed to send test email");
       setToast({ content: "Test email sent" });
     } catch (err) {

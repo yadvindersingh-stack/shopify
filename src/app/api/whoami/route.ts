@@ -6,6 +6,8 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const shop = getShopFromRequestAuthHeader(req.headers.get("authorization"))?.toLowerCase();
-  if (!shop) return NextResponse.json({ ok: false }, { status: 401 });
-  return NextResponse.json({ ok: true, shop });
+  if (!shop) {
+    return NextResponse.json({ ok: false, code: "auth_required", shop: null }, { status: 401 });
+  }
+  return NextResponse.json({ ok: true, code: "shop_resolved", shop });
 }

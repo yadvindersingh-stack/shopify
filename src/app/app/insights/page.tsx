@@ -45,7 +45,10 @@ export default function InsightsPage() {
   const hostParam = searchParams.get("host") || "";
   const shopParam = (searchParams.get("shop") || "").toLowerCase();
 
-  const withHost = useCallback((path: string) => buildPathWithHost(path, hostParam), [hostParam]);
+  const withHost = useCallback(
+    (path: string, shop?: string) => buildPathWithHost(path, hostParam, shop),
+    [hostParam]
+  );
 
   const lastScan = useMemo(() => {
     if (!insights.length) return "No scans yet";
@@ -62,9 +65,9 @@ export default function InsightsPage() {
     return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
   }, [insights]);
 
-const goChoosePlan = useCallback(() => {
-  window.top!.location.href = `/api/billing/redirect`;
-}, []);
+  const goChoosePlan = useCallback(() => {
+    router.push(withHost("/app/billing", shopParam || undefined));
+  }, [router, shopParam, withHost]);
 
 
   const fetchBillingStatus = useCallback(async () => {
