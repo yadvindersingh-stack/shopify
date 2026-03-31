@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { Banner, BlockStack, Button, Card, Text } from "@shopify/polaris";
 import { buildPathWithHost, getHostFromLocation, getShopFromLocation } from "@/lib/host";
@@ -10,11 +9,7 @@ export default function ErrorPage() {
 
   const shop = (sp.get("shop") || getShopFromLocation() || "").toLowerCase();
   const host = sp.get("host") || getHostFromLocation() || "";
-
-  const reconnectUrl = useMemo(() => {
-    if (!shop) return "";
-    return new URL(buildPathWithHost(`/api/auth/start?shop=${encodeURIComponent(shop)}`, host || undefined), window.location.origin).toString();
-  }, [shop, host]);
+  const appUrl = buildPathWithHost("/app", host || undefined, shop || undefined);
 
   return (
     <Card>
@@ -25,7 +20,7 @@ export default function ErrorPage() {
 
         <Banner tone="warning" title="Shopify connection needed">
           <p>
-            Your review session likely lost embedded app context. Reconnect to Shopify to continue without reinstalling the app.
+            Your embedded session needs to be refreshed. Reload the app from Shopify Admin to restore the session token.
           </p>
         </Banner>
 
@@ -38,11 +33,10 @@ export default function ErrorPage() {
             <Button
               variant="primary"
               onClick={() => {
-                // Force a full navigation (important for OAuth)
-                window.location.assign(reconnectUrl);
+                window.location.assign(appUrl);
               }}
             >
-              Reconnect Shopify
+              Reload app
             </Button>
 
             <Text as="p" tone="subdued">

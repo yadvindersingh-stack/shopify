@@ -27,18 +27,7 @@ export default function BillingConfirmPage() {
     }
 
     const withContext = (path: string) => buildPathWithHost(path, host || undefined, shop || undefined);
-    const startAuth = () => {
-      if (!shop || typeof window === "undefined") {
-        router.replace(withContext("/app/billing"));
-        return;
-      }
-
-      const target = new URL(
-        buildPathWithHost(`/api/auth/start?shop=${encodeURIComponent(shop)}`, host || undefined),
-        window.location.origin
-      ).toString();
-      window.top?.location.assign(target);
-    };
+    const restoreApp = () => router.replace(withContext("/app"));
 
     if (!chargeId) {
       router.replace(withContext("/app/billing"));
@@ -53,7 +42,7 @@ export default function BillingConfirmPage() {
     })
       .then(async (r) => {
         if (r.status === 401 || r.status === 403) {
-          startAuth();
+          restoreApp();
           return;
         }
         if (!r.ok) {

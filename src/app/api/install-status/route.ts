@@ -1,37 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
-import { getShopFromRequestAuthHeader } from "@/lib/shopify-session";
+import { HttpError, resolveShop } from "@/lib/shopify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const shop = getShopFromRequestAuthHeader(req.headers.get("authorization"))?.toLowerCase();
+  try {
+    const shop = await resolveShop(req);
+    return NextResponse.json({
+      ok: true,
+      installed: true,
+      shop: shop.shop_domain,
+      code: "installed",
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          installed: false,
+          shop: null,
+          code: error.status === 401 ? "auth_required" : "shop_not_installed",
+          error: error.message,
+        },
+        { status: error.status }
+      );
+    }
 
-  if (!shop) {
     return NextResponse.json(
-      { ok: false, installed: false, shop: null, code: "auth_required" },
-      { status: 401 }
-    );
-  }
-
-  const { data, error } = await supabase
-    .from("shops")
-    .select("shop_domain")
-    .eq("shop_domain", shop)
-    .maybeSingle();
-
-  if (error) {
-    return NextResponse.json(
-      { ok: false, installed: false, shop, code: "install_status_failed", error: error.message },
+      { ok: false, installed: false, shop: null, code: "install_status_failed", error: error instanceof Error ? error.message : String(error) },
       { status: 500 }
     );
   }
-
-  return NextResponse.json({
-    ok: true,
-    installed: Boolean(data),
-    shop,
-    code: data ? "installed" : "shop_not_installed",
-  });
 }

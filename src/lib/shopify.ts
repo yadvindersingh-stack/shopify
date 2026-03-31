@@ -6,6 +6,9 @@ import { supabase } from "./supabase";
 
 const SESSION_COOKIE = "shop_session";
 const SESSION_TTL = "30d";
+const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+const ID_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:id_token";
+const OFFLINE_TOKEN_TYPE = "urn:shopify:params:oauth:token-type:offline-access-token";
 
 const DEFAULT_API_VERSION =
   (process.env.SHOPIFY_API_VERSION as ApiVersion | undefined) ?? ApiVersion.July24;
@@ -112,6 +115,50 @@ export async function decodeShopFromBearer(authHeader?: string): Promise<string 
   }
 }
 
+export function getBearerSessionToken(authHeader?: string): string | null {
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.slice("Bearer ".length).trim();
+  return token || null;
+}
+
+async function exchangeSessionTokenForOfflineAccessToken(shop: string, sessionToken: string) {
+  const params = new URLSearchParams({
+    client_id: SHOPIFY_API_KEY!,
+    client_secret: SHOPIFY_API_SECRET!,
+    grant_type: TOKEN_EXCHANGE_GRANT,
+    subject_token: sessionToken,
+    subject_token_type: ID_TOKEN_TYPE,
+    requested_token_type: OFFLINE_TOKEN_TYPE,
+    expiring: "0",
+  });
+
+  const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: params.toString(),
+  });
+
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // Non-JSON response; handled below.
+  }
+
+  if (!res.ok) {
+    throw new Error(`Token exchange failed ${res.status}: ${text?.slice(0, 500)}`);
+  }
+  if (!json?.access_token) {
+    throw new Error(`Token exchange missing access_token: ${text?.slice(0, 500)}`);
+  }
+
+  return json.access_token as string;
+}
+
 
 export type ShopRecord = {
   id: string;
@@ -134,13 +181,36 @@ export async function getShopRecord(shop_domain: string): Promise<ShopRecord | n
   return data as ShopRecord;
 }
 
+async function provisionShopRecordFromSessionToken(shop: string, sessionToken: string): Promise<ShopRecord> {
+  const access_token = await exchangeSessionTokenForOfflineAccessToken(shop, sessionToken);
+
+  const { error } = await supabase.from("shops").upsert(
+    {
+      shop_domain: shop,
+      access_token,
+      email: "unknown@example.com",
+      timezone: "UTC",
+    },
+    { onConflict: "shop_domain" }
+  );
+
+  if (error) {
+    throw new Error(`Failed to persist shop: ${error.message}`);
+  }
+
+  const record = await getShopRecord(shop);
+  if (!record) {
+    throw new Error("Failed to load shop after token exchange");
+  }
+
+  return record;
+}
+
 export async function resolveShop(req: Request): Promise<ShopRecord> {
   const authHeader = req.headers.get("authorization") || undefined;
-
+  const sessionToken = getBearerSessionToken(authHeader);
   const bearerShop = await decodeShopFromBearer(authHeader);
   let shop = bearerShop;
-  console.log("RESOLVE_SHOP_DEBUG", { bearerShop });
-
 
   if (!shop) {
     const cookieHeader = req.headers.get("cookie") || undefined;
@@ -151,11 +221,24 @@ export async function resolveShop(req: Request): Promise<ShopRecord> {
     throw new HttpError(401, "Unauthorized");
   }
 
- const record = await getShopRecord(shop);
-if (!record) {
-  throw new HttpError(403, "Shop not installed");
-}
-return record;
+  let record = await getShopRecord(shop);
+  if (record?.access_token) {
+    return record;
+  }
+
+  if (sessionToken && bearerShop === shop) {
+    try {
+      return await provisionShopRecordFromSessionToken(shop, sessionToken);
+    } catch (error) {
+      throw new HttpError(500, error instanceof Error ? error.message : "Token exchange failed");
+    }
+  }
+
+  if (!record) {
+    throw new HttpError(403, "Shop not installed");
+  }
+
+  throw new HttpError(403, "Shop access token unavailable");
 }
 
 export async function exchangeCodeForToken(shop: string, code: string) {

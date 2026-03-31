@@ -50,9 +50,7 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
   const reconnectShop = shopFromQuery || readPersistedShop();
-  const reconnectUrl = reconnectShop
-    ? buildPathWithHost(`/api/auth/start?shop=${encodeURIComponent(reconnectShop)}`, host || undefined)
-    : "";
+  const reconnectUrl = buildPathWithHost("/app", host || undefined, reconnectShop || undefined);
 
   const missingContext = !host || !apiKey;
 
@@ -80,14 +78,14 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
                   <Button
                     variant="primary"
                     onClick={() => {
-                      window.top?.location.assign(reconnectUrl);
+                      window.location.assign(reconnectUrl);
                     }}
                   >
-                    Reconnect Shopify
+                    Reload app
                   </Button>
                 ) : (
                   <Text as="p" tone="subdued">
-                    Re-open the app from Shopify Admin so Shopify can restore the embedded session.
+                    Re-open the app from Shopify Admin so Shopify can restore the embedded session token.
                   </Text>
                 )}
                 <Button onClick={() => window.location.reload()}>Retry loading</Button>
