@@ -17,8 +17,6 @@ export default function BillingConfirmPage() {
   const apiFetch = useApiFetch();
 
   useEffect(() => {
-    const chargeId = params.get("charge_id");
-    const plan = params.get("plan") || "monthly";
     const host = params.get("host") || getHostFromLocation();
     const shop = getShopFromLocation();
 
@@ -29,15 +27,9 @@ export default function BillingConfirmPage() {
     const withContext = (path: string) => buildPathWithHost(path, host || undefined, shop || undefined);
     const restoreApp = () => router.replace(withContext("/app"));
 
-    if (!chargeId) {
-      router.replace(withContext("/app/billing"));
-      return;
-    }
-
     apiFetch("/api/billing/confirm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chargeId, plan }),
       cache: "no-store",
     })
       .then(async (r) => {
@@ -49,18 +41,22 @@ export default function BillingConfirmPage() {
           const t = await r.text();
           throw new Error(t || "Confirm failed");
         }
+        const payload = await r.json().catch(() => ({}));
+        if (!payload?.active) {
+          router.replace(withContext("/app/billing"));
+          return;
+        }
         router.replace(withContext("/app/insights"));
       })
       .catch(() => {
-        // If confirm fails, still send user back to billing page to retry.
         router.replace(withContext("/app/billing"));
       });
   }, [apiFetch, params, router]);
 
   return (
-    <Page title="Confirming subscription">
+    <Page title="Checking plan status">
       <Spinner />
-      <Text as="p">Finalizing your subscription…</Text>
+      <Text as="p">Checking your Shopify plan approval…</Text>
     </Page>
   );
 }

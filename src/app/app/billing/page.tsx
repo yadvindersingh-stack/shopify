@@ -36,38 +36,43 @@ export default function BillingPage() {
       } catch {}
 
       if (!res.ok) {
-        setError(json?.error || json?.details || `Billing create failed (${res.status})`);
+        setError(json?.error || json?.details || `Billing redirect failed (${res.status})`);
         return;
       }
 
-      const confirmationUrl = json?.confirmationUrl;
-      if (!confirmationUrl) {
-        setError("Missing confirmationUrl from server");
+      const pricingUrl = json?.pricingUrl;
+      if (!pricingUrl) {
+        setError("Missing pricingUrl from server");
         return;
       }
 
-      // ✅ Embedded apps must use App Bridge remote redirect for billing confirmation.
+      // Managed pricing is hosted by Shopify; redirect there for final plan selection.
       if (!app) {
-        // Fallback: should be rare, but don't brick the user.
-        window.top?.location.assign(confirmationUrl);
+        window.top?.location.assign(pricingUrl);
         return;
       }
 
       const redirect = Redirect.create(app);
-      redirect.dispatch(Redirect.Action.REMOTE, confirmationUrl);
+      redirect.dispatch(Redirect.Action.REMOTE, pricingUrl);
     } finally {
       setLoading(null);
     }
   }
 
   return (
-    <Page title="Choose a plan" subtitle="Start with a 7-day trial. Cancel anytime in Shopify.">
+    <Page title="Choose a plan" subtitle="Compare plans here, then finish selection in Shopify's hosted pricing screen.">
       <BlockStack gap="300">
         {error && (
-          <Banner tone="critical" title="Couldn’t start billing">
+          <Banner tone="critical" title="Couldn’t open pricing">
             <p>{error}</p>
           </Banner>
         )}
+
+        <Banner tone="info" title="Plan approval happens in Shopify">
+          <p>
+            MerchPulse uses Shopify managed pricing. After you pick a plan below, Shopify will open its hosted pricing page for final selection and approval.
+          </p>
+        </Banner>
 
         <Card>
           <BlockStack gap="400">
@@ -85,7 +90,7 @@ export default function BillingPage() {
                 onClick={() => subscribe("monthly")}
                 variant="primary"
               >
-                Start monthly
+                View in Shopify
               </Button>
             </InlineStack>
 
@@ -99,7 +104,7 @@ export default function BillingPage() {
                 </Text>
               </BlockStack>
               <Button loading={loading === "yearly"} onClick={() => subscribe("yearly")}>
-                Start yearly
+                View in Shopify
               </Button>
             </InlineStack>
           </BlockStack>

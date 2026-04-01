@@ -198,7 +198,7 @@ export default function InsightsPage() {
                 action={{ content: "Choose a plan", onAction: goChoosePlan }}
               >
                 <Text as="p">
-                  MerchPulse uses Shopify billing. Pick a plan to enable automated scans and email digests.
+                  MerchPulse uses Shopify managed pricing. Pick a plan and complete approval in Shopify to enable automated scans and email digests.
                 </Text>
               </Banner>
             )}
@@ -228,7 +228,7 @@ export default function InsightsPage() {
                   <Text as="p" tone="subdued">
                     {isPaid
                       ? "Your store looks stable based on the last scan."
-                      : "Pick a plan to start monitoring sales and inventory risks."}
+                      : "Pick a plan in Shopify to start monitoring sales and inventory risks."}
                   </Text>
                 </EmptyState>
               </Card>

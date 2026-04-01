@@ -22,7 +22,7 @@ query ActiveSubs {
 export async function POST(req: NextRequest) {
   try {
     const shop = await resolveShop(req);
-    const { plan } = await req.json().catch(() => ({ plan: "" }));
+    await req.json().catch(() => ({}));
 
     const data = await shopifyGraphql({
       shop: shop.shop_domain,
@@ -52,7 +52,6 @@ export async function POST(req: NextRequest) {
       ok: true,
       active: Boolean(active),
       active_subscription: active,
-      plan: plan || null,
     });
   } catch (e: any) {
     if (e instanceof HttpError) {
