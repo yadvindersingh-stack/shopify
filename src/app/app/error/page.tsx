@@ -20,7 +20,7 @@ export default function ErrorPage() {
 
         <Banner tone="warning" title="Shopify connection needed">
           <p>
-            Your embedded session needs to be refreshed. Reload the app from Shopify Admin to restore the session token.
+            We couldn't finish restoring your Shopify session automatically. Reload the app from Shopify Admin to request a fresh session token.
           </p>
         </Banner>
 

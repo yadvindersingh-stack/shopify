@@ -13,6 +13,8 @@ import {
 } from "@/lib/host";
 import { AppBridgeProvider } from "@/lib/app-bridge-context";
 
+const EMBEDDED_CONTEXT_GRACE_MS = 2000;
+
 export default function PolarisProvider({ children }: { children: ReactNode }) {
   const searchParams = useSearchParams();
   const hostFromQuery = useMemo(() => searchParams.get("host") || "", [searchParams]);
@@ -22,6 +24,7 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
     if (typeof window === "undefined") return hostFromQuery || "";
     return hostFromQuery || readPersistedHost();
   });
+  const [contextSettled, setContextSettled] = useState(Boolean(hostFromQuery || persistedHost));
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -29,6 +32,7 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
     if (isSafeShopifyHost(hostFromQuery)) {
       window.localStorage.setItem("shopifyHost", hostFromQuery);
       setPersistedHost(hostFromQuery);
+      setContextSettled(true);
       return;
     }
 
@@ -44,6 +48,13 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
     if (!stored) {
       clearPersistedHost();
     }
+
+    setContextSettled(false);
+    const timeout = window.setTimeout(() => {
+      setContextSettled(true);
+    }, EMBEDDED_CONTEXT_GRACE_MS);
+
+    return () => window.clearTimeout(timeout);
   }, [hostFromQuery]);
 
   const host = hostFromQuery || persistedHost;
@@ -51,6 +62,22 @@ export default function PolarisProvider({ children }: { children: ReactNode }) {
   const apiKey = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || "";
   const reconnectShop = shopFromQuery || readPersistedShop();
   const reconnectUrl = buildPathWithHost("/app", host || undefined, reconnectShop || undefined);
+
+  if (!contextSettled) {
+    return (
+      <AppProvider i18n={en}>
+        <Frame>
+          <Page title="Loading MerchPulse">
+            <BlockStack gap="300">
+              <Text as="p" tone="subdued">
+                Waiting for Shopify to finish loading the embedded app context…
+              </Text>
+            </BlockStack>
+          </Page>
+        </Frame>
+      </AppProvider>
+    );
+  }
 
   const missingContext = !host || !apiKey;
 
